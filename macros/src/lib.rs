@@ -205,74 +205,74 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let fn_name = &item.sig.ident;
-    let name = LitStr::new(&fn_name.to_string(), fn_name.span());
+    let name = LitStr::new(&fn_name.to_string().replace('_', "-"), fn_name.span());
+
+    let gen_fn_name = Ident::new(&format!("__{}_describe", fn_name), fn_name.span());
 
     let convert_res = if item.sig.asyncness.is_some() {
         quote! {
-            let fut = Box::pin(async move {
+            let fut = ::std::boxed::Box::pin(async move {
                 <#output as ::twilight_slash_command::_macro_internal::InteractionResult>::into_callback_data(res.await)
             });
 
-            Some(if #defer {
-                CommandResponse::Deferred(fut)
+            ::std::option::Option::Some(if #defer {
+                ::twilight_slash_command::CommandResponse::Deferred(fut)
             } else {
-                CommandResponse::Async(fut)
+                ::twilight_slash_command::CommandResponse::Async(fut)
             })
         }
     } else {
         quote! {
             let res = <#output as ::twilight_slash_command::_macro_internal::InteractionResult>::into_callback_data(res);
 
-            Some(CommandResponse::Sync(res))
+            ::std::option::Option::Some(::twilight_slash_command::CommandResponse::Sync(res))
         }
     };
 
     let mut tokens = item.to_token_stream();
 
     tokens.extend(quote! {
-        // Create a module with the same name as the function so that if the function is reexported,
-        // all our stuff is reexported too and will still work.
+        // This needs to be in the same scope as the original function so that all the paths to the argument types stay correct.
+        #[doc(hidden)]
+        pub fn #gen_fn_name() -> ::twilight_slash_command::CommandDecl {
+            let options = ::std::vec![
+                #(
+                    <#opt_type as ::twilight_slash_command::_macro_internal::InteractionOption>::describe(<::std::primitive::str as ::std::string::ToString>::to_string(#opt_name), <::std::primitive::str as ::std::string::ToString>::to_string(#opt_description)),
+                )*
+            ];
+
+            ::twilight_slash_command::CommandDecl {
+                name: #name,
+                description: #description,
+                options,
+                handler: ::std::boxed::Box::new(|options, resolved| {
+                    #(
+                        let mut #opt_ident = ::std::option::Option::None;
+                    )*
+
+                    for option in options {
+                        #(
+                            if option.name() == #opt_name {
+                                #opt_ident = ::std::option::Option::Some(option);
+                            }
+                        ) else *
+                    }
+
+                    #(
+                        let #opt_ident = <#opt_type as ::twilight_slash_command::_macro_internal::InteractionOption>::from_data(#opt_ident, ::std::option::Option::as_ref(&resolved))?;
+                    )*
+
+                    let res = #fn_name(#(#opt_ident),*);
+
+                    #convert_res
+                })
+            }
+        }
+
+        // Create a module with the same name as the function which reexports our generated function, so that it's reexported along with the original function.
         #[doc(hidden)]
         pub mod #fn_name {
-            use ::twilight_slash_command::CommandDecl;
-            use ::twilight_slash_command::CommandResponse;
-
-            // Note: I don't think we have to worry about namespacing here, since it's it's own module,
-            // so we can just use plain `Vec` and stuff.
-            pub fn describe() -> CommandDecl {
-                let options = vec![
-                    #(
-                        <#opt_type as ::twilight_slash_command::_macro_internal::InteractionOption>::describe(#opt_name.to_string(), #opt_description.to_string()),
-                    )*
-                ];
-
-                CommandDecl {
-                    name: #name,
-                    description: #description,
-                    options,
-                    handler: Box::new(|options, resolved| {
-                        #(
-                            let mut #opt_ident = None;
-                        )*
-
-                        for option in options {
-                            #(
-                                if option.name() == #opt_name {
-                                    #opt_ident = Some(option);
-                                }
-                            ) else *
-                        }
-
-                        #(
-                            let #opt_ident = <#opt_type as ::twilight_slash_command::_macro_internal::InteractionOption>::from_data(#opt_ident, resolved.as_ref())?;
-                        )*
-
-                        let res = super::#fn_name(#(#opt_ident),*);
-
-                        #convert_res
-                    })
-                }
-            }
+            pub use super::#gen_fn_name as describe;
         }
     });
 
