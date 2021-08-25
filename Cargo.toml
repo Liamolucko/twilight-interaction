@@ -1,0 +1,21 @@
+[package]
+name = "twilight-slash-command"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+thiserror = "1.0.26"
+twilight-model = { git = "https://github.com/twilight-rs/twilight.git", branch = "main" }
+twilight-gateway = { git = "https://github.com/twilight-rs/twilight.git", branch = "main", optional = true }
+twilight-http = { git = "https://github.com/twilight-rs/twilight.git", branch = "main" }
+twilight-slash-command-macros = { path = "macros" }
+
+[features]
+gateway = ["twilight-gateway"]
+
+[dev-dependencies]
+futures = "0.3.16"
+num_enum = "0.5.4"
+rand = "0.8.4"
+tokio = { version = "1.10.0", features = ["macros", "rt", "rt-multi-thread"] }
+twilight-slash-command = { path = ".", features = ["gateway"] }
