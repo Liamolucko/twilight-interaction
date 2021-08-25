@@ -1,10 +1,12 @@
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::FutureExt;
 use futures::StreamExt;
 use rand::thread_rng;
 use rand::Rng;
+use serde::Deserialize;
 use twilight_gateway::Cluster;
 use twilight_gateway::Event;
 use twilight_gateway::EventTypeFlags;
@@ -72,6 +74,43 @@ mentionable: {}",
     )
 }
 
+#[slash_command(defer, description("Prints 'Hello!' after 1 second."))]
+async fn greet() -> String {
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    "Hello!".to_string()
+}
+
+#[slash_command(description("Gets the current Rust version"))]
+async fn rust_version() -> String {
+    // The subset of the manifest we care about.
+    #[derive(Deserialize)]
+    struct Manifest {
+        pkg: Packages,
+    }
+    #[derive(Deserialize)]
+    struct Packages {
+        rust: Package,
+    }
+    #[derive(Deserialize)]
+    struct Package {
+        version: String,
+    }
+
+    let text = async {
+        reqwest::get("https://static.rust-lang.org/dist/channel-rust-stable.toml")
+            .await?
+            .text()
+            .await
+    };
+    match text.await {
+        Ok(text) => match toml::from_str::<Manifest>(&text) {
+            Ok(manifest) => manifest.pkg.rust.version,
+            Err(err) => format!("Error parsing TOML: {}", err),
+        },
+        Err(err) => format!("Network error: {}", err),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let token = env::var("TOKEN").expect("Missing discord bot token");
@@ -95,6 +134,8 @@ async fn main() {
         .guild_command(guild_id, frob::describe())
         .guild_command(guild_id, random::describe())
         .guild_command(guild_id, all_the_args::describe())
+        .guild_command(guild_id, greet::describe())
+        .guild_command(guild_id, rust_version::describe())
         .build()
         .await
         .unwrap();

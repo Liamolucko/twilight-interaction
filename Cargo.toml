@@ -17,6 +17,9 @@ gateway = ["twilight-gateway"]
 futures = "0.3.16"
 num_enum = "0.5.4"
 rand = "0.8.4"
+reqwest = "0.11.4"
+serde = { version = "1.0.129", features = ["derive"] }
 tokio = { version = "1.10.0", features = ["macros", "rt", "rt-multi-thread"] }
+toml = "0.5.8"
 twilight-mention = { git = "https://github.com/twilight-rs/twilight.git", branch = "main" }
 twilight-slash-command = { path = ".", features = ["gateway"] }
