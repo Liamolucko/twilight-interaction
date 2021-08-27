@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2018"
 
 [dependencies]
+ed25519-dalek = { version = "1.0.1", optional = true }
+hex = { version = "0.4.3", optional = true }
+http = { version = "0.2.4", optional = true }
+serde_json = { version = "1.0.66", optional = true }
 thiserror = "1.0.26"
 twilight-model = { git = "https://github.com/twilight-rs/twilight.git", branch = "main" }
 twilight-gateway = { git = "https://github.com/twilight-rs/twilight.git", branch = "main", optional = true }
@@ -12,14 +16,18 @@ twilight-slash-command-macros = { path = "macros" }
 
 [features]
 gateway = ["twilight-gateway"]
+webhook = ["ed25519-dalek", "hex", "http", "serde_json"]
 
 [dev-dependencies]
+anyhow = "1.0.43"
 futures = "0.3.16"
+hyper = { version = "0.14.12", features = ["server"] }
 num_enum = "0.5.4"
 rand = "0.8.4"
 reqwest = "0.11.4"
 serde = { version = "1.0.129", features = ["derive"] }
 tokio = { version = "1.10.0", features = ["macros", "rt", "rt-multi-thread"] }
 toml = "0.5.8"
+tower = { version = "0.4.8", features = ["make"] }
 twilight-mention = { git = "https://github.com/twilight-rs/twilight.git", branch = "main" }
-twilight-slash-command = { path = ".", features = ["gateway"] }
+twilight-slash-command = { path = ".", features = ["gateway", "webhook"] }

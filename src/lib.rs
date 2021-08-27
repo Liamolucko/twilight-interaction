@@ -69,6 +69,17 @@ pub enum CommandResponse {
 }
 
 #[derive(Error, Debug)]
+pub enum CommandError {
+    #[error("Unknown command '/{0}'.")]
+    Unknown(String),
+    // We don't need to be too specific about options being wrong, since something had to have gone terribly wrong for this to happen.
+    // We check the IDs of the commands, so we know they're exactly the commands they're supposed to be,
+    // so they could only really have invalid options if something went wrong on Discord's end.
+    #[error("Invalid option '{0}'.")]
+    InvalidOption(&'static str),
+}
+
+#[derive(Error, Debug)]
 pub enum Error {
     #[error(transparent)]
     Interaction(#[from] InteractionError),
@@ -78,6 +89,9 @@ pub enum Error {
     Deserialize(#[from] DeserializeBodyError),
     #[error(transparent)]
     UpdateResponse(#[from] UpdateOriginalResponseError),
+    #[cfg(feature = "webhook")]
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
 }
 
 pub struct CommandDecl {
@@ -85,7 +99,7 @@ pub struct CommandDecl {
         dyn Fn(
                 Vec<CommandDataOption>,
                 Option<CommandInteractionDataResolved>,
-            ) -> Option<CommandResponse>
+            ) -> Result<CommandResponse, CommandError>
             + Send
             + Sync,
     >,
@@ -118,7 +132,7 @@ struct CommandHandler {
         dyn Fn(
                 Vec<CommandDataOption>,
                 Option<CommandInteractionDataResolved>,
-            ) -> Option<CommandResponse>
+            ) -> Result<CommandResponse, CommandError>
             + Send
             + Sync,
     >,
@@ -139,7 +153,7 @@ impl Handler {
         }
     }
 
-    pub fn handle(&self, command: CommandData) -> Option<CommandResponse> {
+    pub fn handle(&self, command: CommandData) -> Result<CommandResponse, CommandError> {
         for handler in &self.handlers {
             if handler.id == command.id {
                 return (handler.handler)(command.options, command.resolved);
@@ -147,7 +161,7 @@ impl Handler {
         }
 
         // It didn't match any known commands, so fail.
-        None
+        Err(CommandError::Unknown(command.name))
     }
 
     /// Handle an INTERACTION_CREATE event from the Discord Gateway, automatically sending the response over HTTP.
@@ -160,7 +174,7 @@ impl Handler {
         use crate::_macro_internal::InteractionResult;
 
         match self.handle(command.data) {
-            Some(response) => match response {
+            Ok(response) => match response {
                 CommandResponse::Sync(res) => {
                     self.http
                         .interaction_callback(
@@ -213,19 +227,17 @@ impl Handler {
                         builder = builder.allowed_mentions(allowed_mentions);
                     }
 
-                    builder.exec().await.unwrap();
+                    builder.exec().await?;
                 }
             },
-            None => {
-                // This should never happen, but we can't just 400 like if this was handling webhooks so provide a reasonable response.
+            Err(e) => {
+                // This shouldn't happen, but provide a reasonable response.
                 self.http
                     .interaction_callback(
                         command.id,
                         &command.token,
                         &InteractionResponse::ChannelMessageWithSource(
-                            "Unexpected interaction received"
-                                .to_string()
-                                .into_callback_data(),
+                            format!("Error: {}", e).into_callback_data(),
                         ),
                     )
                     .exec()
@@ -234,6 +246,177 @@ impl Handler {
         }
         Ok(())
     }
+
+    #[cfg(feature = "webhook")]
+    pub async fn handle_request(
+        &self,
+        request: http::Request<&[u8]>,
+        pub_key: &ed25519_dalek::PublicKey,
+    ) -> Result<
+        (
+            http::Response<Vec<u8>>,
+            Option<Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>>,
+        ),
+        Error,
+    > {
+        use http::header::CONTENT_TYPE;
+        use http::Response;
+        use http::StatusCode;
+        use twilight_model::application::callback::InteractionResponse;
+        use twilight_model::application::interaction::Interaction;
+
+        use crate::_macro_internal::InteractionResult;
+
+        let interaction = match process(request, pub_key) {
+            Ok(interaction) => interaction,
+            Err(status) => {
+                return Ok((
+                    // This can never fail, so it's fine to `unwrap` it -
+                    // `status` only fails if it fails to convert to a `StatusCode`, but it's already a `StatusCode`,
+                    // and `body` never fails.
+                    Response::builder().status(status).body(vec![]).unwrap(),
+                    None,
+                ));
+            }
+        };
+
+        match interaction {
+            // Return a Pong if a Ping is received.
+            Interaction::Ping(_) => {
+                let response = InteractionResponse::Pong;
+
+                let json = serde_json::to_vec(&response)?;
+
+                Ok((
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, "application/json")
+                        .body(json.into())
+                        // If this is going to fail, it will always fail.
+                        .unwrap(),
+                    None,
+                ))
+            }
+            // Respond to a slash command.
+            Interaction::ApplicationCommand(command) => {
+                // Run the handler to gain a response.
+                let (response, fut) = match self.handle(command.data) {
+                    Ok(response) => match response {
+                        CommandResponse::Sync(res) => {
+                            (InteractionResponse::ChannelMessageWithSource(res), None)
+                        }
+                        CommandResponse::Async(fut) => (
+                            InteractionResponse::ChannelMessageWithSource(fut.await),
+                            None,
+                        ),
+                        CommandResponse::Deferred(fut) => {
+                            let token = command.token;
+
+                            let http = self.http.clone();
+
+                            let fut = Box::pin(async move {
+                                let res = fut.await;
+
+                                let mut builder = http
+                                    .update_interaction_original(&token)?
+                                    .content(res.content.as_deref())?
+                                    .embeds(Some(&res.embeds))?;
+
+                                if let Some(allowed_mentions) = res.allowed_mentions {
+                                    builder = builder.allowed_mentions(allowed_mentions);
+                                }
+
+                                builder.exec().await?;
+
+                                Ok(())
+                            }) as _;
+
+                            let response = InteractionResponse::DeferredChannelMessageWithSource(
+                                CallbackData {
+                                    allowed_mentions: None,
+                                    content: None,
+                                    embeds: vec![],
+                                    flags: None,
+                                    tts: None,
+                                    components: None,
+                                },
+                            );
+
+                            (response, Some(fut))
+                        }
+                    },
+                    Err(e) => (
+                        InteractionResponse::ChannelMessageWithSource(
+                            format!("Error: {}", e).into_callback_data(),
+                        ),
+                        None,
+                    ),
+                };
+
+                // Serialize the response and return it back to discord.
+                let json = serde_json::to_vec(&response)?;
+
+                let response = Response::builder()
+                    .header(CONTENT_TYPE, "application/json")
+                    .status(StatusCode::OK)
+                    .body(json.into())
+                    .unwrap();
+
+                Ok((response, fut))
+            }
+            // Unhandled interaction types.
+            _ => Ok((
+                Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(vec![])
+                    .unwrap(),
+                None,
+            )),
+        }
+    }
+}
+
+/// Get the interaction sent in a request, or return an appropriate error code if it's invalid.
+#[cfg(feature = "webhook")]
+fn process(
+    request: http::Request<&[u8]>,
+    pub_key: &ed25519_dalek::PublicKey,
+) -> Result<twilight_model::application::interaction::Interaction, http::StatusCode> {
+    use ed25519_dalek::Signature;
+    use ed25519_dalek::Verifier;
+    use hex::FromHex;
+    use http::Method;
+    use http::StatusCode;
+    use twilight_model::application::interaction::Interaction;
+
+    // Check that the method used is a POST, all other methods are not allowed.
+    if request.method() != Method::POST {
+        return Err(StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    // Extract the timestamp header for use later to check the signature.
+    let timestamp = request
+        .headers()
+        .get("x-signature-timestamp")
+        .ok_or(StatusCode::BAD_REQUEST)?;
+
+    // Extact the signature to check against.
+    let signature = request
+        .headers()
+        .get("x-signature-ed25519")
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let signature =
+        Signature::new(FromHex::from_hex(signature).map_err(|_| StatusCode::BAD_REQUEST)?);
+
+    let body = *request.body();
+
+    // Check if the signature matches and else return a error response.
+    pub_key
+        .verify([timestamp.as_bytes(), body].concat().as_ref(), &signature)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    // Deserialize the body into a interaction.
+    serde_json::from_slice::<Interaction>(body).map_err(|_| StatusCode::BAD_REQUEST)
 }
 
 pub struct HandlerBuilder {

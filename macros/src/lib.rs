@@ -215,7 +215,7 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
                 <#output as ::twilight_slash_command::_macro_internal::InteractionResult>::into_callback_data(res.await)
             });
 
-            ::std::option::Option::Some(if #defer {
+            ::std::result::Result::Ok(if #defer {
                 ::twilight_slash_command::CommandResponse::Deferred(fut)
             } else {
                 ::twilight_slash_command::CommandResponse::Async(fut)
@@ -225,7 +225,7 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
         quote! {
             let res = <#output as ::twilight_slash_command::_macro_internal::InteractionResult>::into_callback_data(res);
 
-            ::std::option::Option::Some(::twilight_slash_command::CommandResponse::Sync(res))
+            ::std::result::Result::Ok(::twilight_slash_command::CommandResponse::Sync(res))
         }
     };
 
@@ -259,7 +259,8 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
                     }
 
                     #(
-                        let #opt_ident = <#opt_type as ::twilight_slash_command::_macro_internal::InteractionOption>::from_data(#opt_ident, ::std::option::Option::as_ref(&resolved))?;
+                        let #opt_ident = <#opt_type as ::twilight_slash_command::_macro_internal::InteractionOption>::from_data(#opt_ident, ::std::option::Option::as_ref(&resolved));
+                        let #opt_ident = ::std::option::Option::ok_or_else(#opt_ident, || ::twilight_slash_command::CommandError::InvalidOption(#opt_name))?;
                     )*
 
                     let res = #fn_name(#(#opt_ident),*);
