@@ -40,10 +40,11 @@ async fn main() {
     http.set_application_id(application_id);
 
     let handler = Handler::builder(http.clone())
-        .guild_command(guild_id, frob::describe())
-        .guild_command(guild_id, random::describe())
         .guild_command(guild_id, all_the_args::describe())
+        .guild_command(guild_id, default::describe())
+        .guild_command(guild_id, frob::describe())
         .guild_command(guild_id, greet::describe())
+        .guild_command(guild_id, random::describe())
         .guild_command(guild_id, rust_version::describe())
         .build()
         .await

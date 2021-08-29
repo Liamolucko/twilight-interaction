@@ -45,6 +45,7 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut description = None;
     let mut opt_descriptions = HashMap::new();
+    let mut renames = HashMap::new();
 
     for arg in args {
         match &arg {
@@ -67,58 +68,98 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 }
                 Meta::List(list) => {
-                    if !list.path.is_ident("description") {
+                    if list.path.is_ident("description") {
+                        for meta in &list.nested {
+                            match meta {
+                                NestedMeta::Lit(lit) => match lit {
+                                    Lit::Str(str) => description = Some(str.value()),
+                                    _ => {
+                                        return syn::Error::new_spanned(
+                                            lit,
+                                            "Description must be a string literal",
+                                        )
+                                        .into_compile_error()
+                                        .into()
+                                    }
+                                },
+                                NestedMeta::Meta(meta) => match meta {
+                                    Meta::NameValue(name_value) => {
+                                        if let Some(ident) = name_value.path.get_ident() {
+                                            opt_descriptions.insert(
+                                                ident.clone(),
+                                                match &name_value.lit {
+                                                    Lit::Str(str) => str.value(),
+                                                    lit => {
+                                                        return syn::Error::new_spanned(
+                                                            lit,
+                                                            "Description must be a string literal",
+                                                        )
+                                                        .into_compile_error()
+                                                        .into()
+                                                    }
+                                                },
+                                            );
+                                        } else {
+                                            return syn::Error::new_spanned(
+                                                &name_value.path,
+                                                "Option must be ident",
+                                            )
+                                            .into_compile_error()
+                                            .into();
+                                        }
+                                    }
+                                    _ => {
+                                        return syn::Error::new_spanned(meta, "Unexpected argument")
+                                            .into_compile_error()
+                                            .into()
+                                    }
+                                },
+                            }
+                        }
+                    } else if list.path.is_ident("rename") {
+                        for meta in &list.nested {
+                            match meta {
+                                NestedMeta::Meta(meta) => match meta {
+                                    Meta::NameValue(name_value) => {
+                                        if let Some(ident) = name_value.path.get_ident() {
+                                            renames.insert(
+                                                ident.clone(),
+                                                match &name_value.lit {
+                                                    Lit::Str(lit) => lit.clone(),
+                                                    lit => {
+                                                        return syn::Error::new_spanned(
+                                                            lit,
+                                                            "The new name must be a string literal",
+                                                        )
+                                                        .into_compile_error()
+                                                        .into()
+                                                    }
+                                                },
+                                            );
+                                        } else {
+                                            return syn::Error::new_spanned(
+                                                &name_value.path,
+                                                "The option name must be an ident",
+                                            )
+                                            .into_compile_error()
+                                            .into();
+                                        }
+                                    }
+                                    _ => {
+                                        return syn::Error::new_spanned(meta, "Options to `rename` must be of the form `ident = \"name\"`")
+                                            .into_compile_error()
+                                            .into()
+                                    }
+                                },
+                                _ =>    return syn::Error::new_spanned(meta, "Options to `rename` must be of the form `ident = \"name\"`")
+                                .into_compile_error()
+                                .into()
+                            }
+                        }
+                    } else {
                         return syn::Error::new_spanned(list, "Unexpected argument")
                             .into_compile_error()
                             .into();
-                    }
-
-                    for meta in &list.nested {
-                        match meta {
-                            NestedMeta::Lit(lit) => match lit {
-                                Lit::Str(str) => description = Some(str.value()),
-                                _ => {
-                                    return syn::Error::new_spanned(
-                                        lit,
-                                        "Description must be a string literal",
-                                    )
-                                    .into_compile_error()
-                                    .into()
-                                }
-                            },
-                            NestedMeta::Meta(meta) => match meta {
-                                Meta::NameValue(name_value) => {
-                                    if let Some(ident) = name_value.path.get_ident() {
-                                        opt_descriptions.insert(
-                                            ident.clone(),
-                                            match &name_value.lit {
-                                                Lit::Str(str) => str.value(),
-                                                lit => {
-                                                    return syn::Error::new_spanned(
-                                                        lit,
-                                                        "Description must be a string literal",
-                                                    )
-                                                    .into_compile_error()
-                                                    .into()
-                                                }
-                                            },
-                                        );
-                                    } else {
-                                        return syn::Error::new_spanned(
-                                            &name_value.path,
-                                            "Option must be ident",
-                                        )
-                                        .into_compile_error()
-                                        .into();
-                                    }
-                                }
-                                _ => {
-                                    return syn::Error::new_spanned(meta, "Unexpected argument")
-                                        .into_compile_error()
-                                        .into()
-                                }
-                            },
-                        }
                     }
                 }
                 _ => {
@@ -147,9 +188,12 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
     for arg in &item.sig.inputs {
         match arg {
             FnArg::Receiver(_) => {
-                return syn::Error::new_spanned(arg, "Slash commands cannot have receiver arguments (`self`)")
-                    .into_compile_error()
-                    .into()
+                return syn::Error::new_spanned(
+                    arg,
+                    "Slash commands cannot have receiver arguments (`self`)",
+                )
+                .into_compile_error()
+                .into()
             }
             FnArg::Typed(arg) => {
                 opt_type.push(&*arg.ty);
@@ -168,19 +212,25 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
                             }
                         }
 
-                        // Slash command argument names are kebab-case, whereas Rust argument names are snake_case.
-                        // So, replace the underscores with dashes to translate.
-                        let name = ident.ident.to_string().replace('_', "-");
+                        let name = match renames.remove(&ident.ident) {
+                            Some(name) => name,
+                            None => {
+                                // Slash command argument names are kebab-case, whereas Rust argument names are snake_case.
+                                // So, replace the underscores with dashes to translate.
+                                LitStr::new(&ident.ident.to_string().replace('_', "-"), ident.span())
+                            }
+                        };
+
                         // Validate the name
-                        for char in name.chars() {
+                        for char in name.value().chars() {
                             match char {
-                                // Lowercase letters and underscores are allowed.
-                                'a'..='z' | '_' => {},
+                                // Lowercase letters and dashes are allowed.
+                                'a'..='z' | '-' => {},
                                 // Any other characters are invalid for a slash command argument name.
-                                _ => return syn::Error::new_spanned(ident, "Argument names must be snake_case (so they can map cleanly to Discord's kebab-case").into_compile_error().into(),
+                                _ => return syn::Error::new_spanned(name, "Argument names must be kebab-case (or snake_case, when written as an identifier)").into_compile_error().into(),
                             }
                         }
-                        opt_name.push(LitStr::new(&name, ident.span()));
+                        opt_name.push(name);
                         opt_ident.push(Ident::new(&(ident.ident.to_string() + "_"), ident.span()));
                     }
                     pat => {
@@ -196,7 +246,9 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
     let description = if let Some(description) = description {
         LitStr::new(&description, Span::call_site())
     } else {
-        return syn::Error::new(Span::call_site(), "Missing description").into_compile_error().into();
+        return syn::Error::new(Span::call_site(), "Missing description")
+            .into_compile_error()
+            .into();
     };
 
     let output = match item.sig.output {

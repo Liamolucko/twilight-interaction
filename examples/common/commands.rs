@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use num_enum::IntoPrimitive;
+use num_enum::TryFromPrimitive;
 use rand::thread_rng;
 use rand::Rng;
 use serde::Deserialize;
@@ -8,6 +10,7 @@ use twilight_model::application::interaction::application_command::InteractionCh
 use twilight_model::guild::Role;
 use twilight_model::user::User;
 use twilight_slash_command::slash_command;
+use twilight_slash_command::Choices;
 use twilight_slash_command::Mentionable;
 
 #[slash_command(description("Frobs some bits", bits = "The bits to frob"))]
@@ -96,5 +99,39 @@ pub async fn rust_version() -> String {
             Err(err) => format!("Error parsing TOML: {}", err),
         },
         Err(err) => format!("Network error: {}", err),
+    }
+}
+
+#[repr(i64)]
+#[derive(TryFromPrimitive, IntoPrimitive, Choices)]
+pub enum Type {
+    #[name = "bool"]
+    Bool,
+    #[name = "char"]
+    Char,
+    Duration,
+    #[name = "i32"]
+    I32,
+    Option,
+    String,
+    Vec,
+}
+
+#[slash_command(
+    description(
+        "Gets the default value for a type",
+        type_option = "The type to get the default value of"
+    ),
+    rename(type_option = "type")
+)]
+pub fn default(type_option: Type) -> String {
+    match type_option {
+        Type::Bool => format!("`{:?}`", bool::default()),
+        Type::Char => format!("`{:?}`", char::default()),
+        Type::Duration => format!("`{:?}`", Duration::default()),
+        Type::I32 => format!("`{:?}`", i32::default()),
+        Type::Option => format!("`{:?}`", Option::<()>::default()),
+        Type::String => format!("`{:?}`", String::default()),
+        Type::Vec => format!("`{:?}`", Vec::<()>::default()),
     }
 }

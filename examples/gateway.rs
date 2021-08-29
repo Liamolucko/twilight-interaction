@@ -15,7 +15,7 @@ use twilight_slash_command::Handler;
 #[path = "common/commands.rs"]
 mod commands;
 
-use commands::{all_the_args, frob, greet, random, rust_version};
+use commands::{all_the_args, default, frob, greet, random, rust_version};
 
 #[tokio::main]
 async fn main() {
@@ -37,10 +37,11 @@ async fn main() {
         .into();
 
     let handler = Handler::builder(http.clone())
-        .guild_command(guild_id, frob::describe())
-        .guild_command(guild_id, random::describe())
         .guild_command(guild_id, all_the_args::describe())
+        .guild_command(guild_id, default::describe())
+        .guild_command(guild_id, frob::describe())
         .guild_command(guild_id, greet::describe())
+        .guild_command(guild_id, random::describe())
         .guild_command(guild_id, rust_version::describe())
         .build()
         .await
