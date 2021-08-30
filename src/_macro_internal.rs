@@ -241,7 +241,7 @@ impl<T: Choices> InteractionOption for T {
         _: Option<&CommandInteractionDataResolved>,
     ) -> Option<Self> {
         match data {
-            Some(CommandDataOption::Integer { value, .. }) => Self::try_from(value).ok(),
+            Some(CommandDataOption::Integer { value, .. }) => Self::from_discriminant(value),
             _ => None,
         }
     }

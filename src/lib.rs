@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
@@ -24,7 +23,10 @@ use twilight_model::user::User;
 #[doc(hidden)]
 pub mod _macro_internal;
 
-pub use twilight_slash_command_macros::*;
+pub use twilight_slash_command_macros::slash_command;
+// Only show the trait in docs, not the derive macro.
+#[doc(hidden)]
+pub use twilight_slash_command_macros::Choices;
 
 /// Anything which can be mentioned; either a user or a role.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -40,10 +42,9 @@ pub enum Mentionable {
 /// # Examples
 /// ```
 /// use twilight_slash_command::Choices;
-/// use num_enum::{TryFromPrimitive, IntoPrimitive};
 ///
 /// #[repr(i64)]
-/// #[derive(IntoPrimitive, TryFromPrimitive, Choices)]
+/// #[derive(Choices)]
 /// enum Foo {
 ///     Bar,
 ///     Baz,
@@ -55,8 +56,10 @@ pub enum Mentionable {
 ///     Foo::CHOICES,
 ///     &[("Bar", 0), ("Baz", 1), ("not an ident!", 2)]
 /// );
-pub trait Choices: Into<i64> + TryFrom<i64> {
+pub trait Choices: Sized {
     const CHOICES: &'static [(&'static str, i64)];
+
+    fn from_discriminant(discriminant: i64) -> Option<Self>;
 }
 
 pub enum CommandResponse {

@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use num_enum::IntoPrimitive;
-use num_enum::TryFromPrimitive;
 use rand::thread_rng;
 use rand::Rng;
 use serde::Deserialize;
@@ -102,8 +100,7 @@ pub async fn rust_version() -> String {
     }
 }
 
-#[repr(i64)]
-#[derive(TryFromPrimitive, IntoPrimitive, Choices)]
+#[derive(Choices)]
 pub enum Type {
     #[name = "bool"]
     Bool,

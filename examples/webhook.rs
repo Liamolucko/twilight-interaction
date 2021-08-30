@@ -15,7 +15,7 @@ use twilight_slash_command::Handler;
 #[path = "common/commands.rs"]
 mod commands;
 
-use commands::{all_the_args, frob, greet, random, rust_version};
+use commands::{all_the_args, default, frob, greet, random, rust_version};
 
 #[tokio::main]
 async fn main() {

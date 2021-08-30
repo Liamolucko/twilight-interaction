@@ -36,6 +36,43 @@ impl Parse for EqStr {
     }
 }
 
+// rustdoc complains about `twilight_model` not existing since this crate doesn't actually link to it,
+// but this should only really be viewed in the docs for `twilight_slash_command` anyway.
+#[allow(rustdoc::broken_intra_doc_links)]
+/// Declares a function usable as a slash command.
+///
+/// This allows the function to be passed to [`Handler`],
+/// which will then a slash command with the correct name, types and arguments,
+/// and use it to handle that command.
+///
+/// A `description` parameter needs to be passed to the macro,
+/// to provide the description which Discord will display.
+///
+/// The function needs to return either a [`String`], in most cases,
+/// or a [`CallbackData`] to set more advanced options.
+///
+/// ```no_run
+/// use twilight_slash_command::{slash_command, Handler};
+///
+/// #[slash_command(description("Prints 'Hello!'"))]
+/// fn greet() -> String {
+///     "Hello!".to_string()
+/// }
+///
+/// // This is needed to register the slash command.
+/// let http_client = twilight_http::Client::new("my_token".to_string())
+///
+/// let handler = Handler::new(http_client)
+///     .global_command(greet::describe())
+///     .build()
+///     .await
+///     .unwrap();
+///
+/// // Now we can use `handler` to handle incoming commands!
+/// ```
+///
+/// [`Handler`]: struct.Handler.html
+/// [`CallbackData`]: ::twilight_model::application::callback::CallbackData
 #[proc_macro_attribute]
 pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as AttributeArgs);
@@ -217,7 +254,10 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
                             None => {
                                 // Slash command argument names are kebab-case, whereas Rust argument names are snake_case.
                                 // So, replace the underscores with dashes to translate.
-                                LitStr::new(&ident.ident.to_string().replace('_', "-"), ident.span())
+                                LitStr::new(
+                                    &ident.ident.to_string().replace('_', "-"),
+                                    ident.span(),
+                                )
                             }
                         };
 
@@ -341,6 +381,7 @@ pub fn derive_choices(item: TokenStream) -> TokenStream {
 
     let mut names = Vec::with_capacity(item.variants.len());
     let mut values = Vec::with_capacity(item.variants.len());
+    let mut display_names = Vec::with_capacity(item.variants.len());
 
     for variant in item.variants {
         let name_attr = variant
@@ -357,20 +398,39 @@ pub fn derive_choices(item: TokenStream) -> TokenStream {
         };
         let value = variant
             .discriminant
-            .map(|(_, value)| value.into_token_stream())
+            // The highest enum discriminants can currently go is 64 bits,
+            // and we only really care about having a unique value for each variant,
+            // so just using an `as` cast here is fine.
+            // (Also, Discord's integers can only go to 2**53 anyway. TODO add a check for that somehow)
+            .map(|(_, value)| quote!(#value as ::std::primitive::i64))
             .unwrap_or(next_discriminant.clone());
 
         next_discriminant = quote!(::std::primitive::i64::wrapping_add(#value, 1));
 
-        names.push(name);
+        names.push(variant.ident);
         values.push(value);
+        display_names.push(name);
     }
 
     (quote! {
         impl ::twilight_slash_command::Choices for #name {
-            const CHOICES: &'static [(&'static str, i64)] = &[
-                #((#names, #values),)*
+            const CHOICES: &'static [(&'static ::std::primitive::str, ::std::primitive::i64)] = &[
+                #((#display_names, #values),)*
             ];
+
+            fn from_discriminant(discriminant: ::std::primitive::i64) -> ::std::option::Option<Self> {
+                #![allow(non_upper_case_globals)]
+                #(
+                    const #names: ::std::primitive::i64 = #values;
+                )*
+                match discriminant {
+                    #(
+                        #names => ::std::option::Option::Some(Self::#names),
+                    )*
+                    #[allow(unreachable_patterns)]
+                    _ => ::std::option::Option::None,
+                }
+            }
         }
     })
     .into()
