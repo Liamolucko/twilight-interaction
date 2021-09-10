@@ -25,7 +25,7 @@ pub enum Mentionable {
 ///
 /// # Examples
 /// ```
-/// use twilight_slash_command::Choices;
+/// use twilight_interaction::Choices;
 ///
 /// #[repr(i64)]
 /// #[derive(Choices)]

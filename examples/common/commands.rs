@@ -14,12 +14,12 @@ use twilight_model::application::interaction::application_command::InteractionCh
 use twilight_model::guild::Role;
 use twilight_model::id::GuildId;
 use twilight_model::user::User;
-use twilight_slash_command::slash_command;
-use twilight_slash_command::Choices;
-use twilight_slash_command::ComponentResponse;
-use twilight_slash_command::Handler;
-use twilight_slash_command::IntoCallbackData;
-use twilight_slash_command::Mentionable;
+use twilight_interaction::slash_command;
+use twilight_interaction::Choices;
+use twilight_interaction::ComponentResponse;
+use twilight_interaction::Handler;
+use twilight_interaction::IntoCallbackData;
+use twilight_interaction::Mentionable;
 
 #[slash_command(description("Frobs some bits", bits = "The bits to frob"))]
 pub fn frob(bits: i64) -> String {

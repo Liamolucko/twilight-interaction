@@ -1,5 +1,5 @@
 [package]
-name = "twilight-slash-command"
+name = "twilight-interaction"
 version = "0.1.0"
 edition = "2018"
 
@@ -12,7 +12,7 @@ thiserror = "1.0.26"
 twilight-model = { git = "https://github.com/twilight-rs/twilight.git", branch = "main" }
 twilight-gateway = { git = "https://github.com/twilight-rs/twilight.git", branch = "main", optional = true }
 twilight-http = { git = "https://github.com/twilight-rs/twilight.git", branch = "main" }
-twilight-slash-command-macros = { path = "macros" }
+twilight-interaction-macros = { path = "macros" }
 
 [features]
 gateway = ["twilight-gateway"]
@@ -32,4 +32,4 @@ tokio = { version = "1.10.0", features = ["macros", "rt", "rt-multi-thread"] }
 toml = "0.5.8"
 tower = { version = "0.4.8", features = ["make"] }
 twilight-mention = { git = "https://github.com/twilight-rs/twilight.git", branch = "main" }
-twilight-slash-command = { path = ".", features = ["gateway", "webhook"] }
+twilight-interaction = { path = ".", features = ["gateway", "webhook"] }

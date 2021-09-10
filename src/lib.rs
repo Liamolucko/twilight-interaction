@@ -24,11 +24,11 @@ use twilight_model::id::InteractionId;
 
 mod option_types;
 
-pub use twilight_slash_command_macros::slash_command;
+pub use twilight_interaction_macros::slash_command;
 // Only show the trait in docs, not the derive macro.
 pub use option_types::*;
 #[doc(hidden)]
-pub use twilight_slash_command_macros::Choices;
+pub use twilight_interaction_macros::Choices;
 
 /// An empty `CallbackData`, to use for the pointless field of `InteractionResponse::DeferredChannelMessageWithSource`.
 const EMPTY_CALLBACK: CallbackData = CallbackData {

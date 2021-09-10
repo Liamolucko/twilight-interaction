@@ -36,7 +36,7 @@ impl Parse for EqStr {
 }
 
 // rustdoc complains about `twilight_model` not existing since this crate doesn't actually link to it,
-// but this should only really be viewed in the docs for `twilight_slash_command` anyway.
+// but this should only really be viewed in the docs for `twilight_interaction` anyway.
 #[allow(rustdoc::broken_intra_doc_links)]
 /// Declares a function usable as a slash command.
 ///
@@ -51,13 +51,14 @@ impl Parse for EqStr {
 /// or a [`CallbackData`] to set more advanced options.
 ///
 /// ```no_run
-/// use twilight_slash_command::{slash_command, Handler};
+/// use twilight_interaction::{slash_command, Handler};
 ///
 /// #[slash_command(description("Prints 'Hello!'"))]
 /// fn greet() -> String {
 ///     "Hello!".to_string()
 /// }
 ///
+/// # async {
 /// // This is needed to register the slash command.
 /// let http_client = twilight_http::Client::new("my_token".to_string())
 ///
@@ -68,6 +69,7 @@ impl Parse for EqStr {
 ///     .unwrap();
 ///
 /// // Now we can use `handler` to handle incoming commands!
+/// # };
 /// ```
 ///
 /// [`Handler`]: struct.Handler.html
@@ -300,7 +302,7 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
     tokens.extend(quote! {
         // This needs to be in the same scope as the original function so that all the paths to the argument types stay correct.
         #[doc(hidden)]
-        pub fn #gen_fn_name() -> ::twilight_slash_command::CommandDecl {
+        pub fn #gen_fn_name() -> ::twilight_interaction::CommandDecl {
             use ::std::boxed::Box;
             use ::std::convert::From;
             use ::std::option::Option::*;
@@ -309,9 +311,10 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
             use ::std::string::String;
             use ::std::vec;
 
+            use ::twilight_model::application::callback::CallbackData;
             use ::twilight_model::application::callback::InteractionResponse;
-            use ::twilight_slash_command::SlashCommandOption;
-            use ::twilight_slash_command::IntoCallbackData;
+            use ::twilight_interaction::SlashCommandOption;
+            use ::twilight_interaction::IntoCallbackData;
 
             /// An empty `CallbackData`, to use for the pointless field of `InteractionResponse::DeferredChannelMessageWithSource`.
             const EMPTY_CALLBACK: CallbackData = CallbackData {
@@ -329,7 +332,7 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
                 )*
             ];
 
-            ::twilight_slash_command::CommandDecl {
+            ::twilight_interaction::CommandDecl {
                 name: #name,
                 description: #description,
                 options,
@@ -408,7 +411,7 @@ pub fn derive_choices(item: TokenStream) -> TokenStream {
     }
 
     (quote! {
-        impl ::twilight_slash_command::Choices for #name {
+        impl ::twilight_interaction::Choices for #name {
             const CHOICES: &'static [(&'static ::std::primitive::str, ::std::primitive::i64)] = &[
                 #((#display_names, #values),)*
             ];
