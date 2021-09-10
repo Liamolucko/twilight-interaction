@@ -13,7 +13,6 @@ use syn::Ident;
 use syn::ItemEnum;
 use syn::ItemFn;
 use syn::Lit;
-use syn::LitBool;
 use syn::LitStr;
 use syn::Meta;
 use syn::NestedMeta;
@@ -78,8 +77,6 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as AttributeArgs);
     let item = parse_macro_input!(item as ItemFn);
 
-    let mut defer = false;
-
     let mut description = None;
     let mut opt_descriptions = HashMap::new();
     let mut renames = HashMap::new();
@@ -87,23 +84,6 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
     for arg in args {
         match &arg {
             NestedMeta::Meta(meta) => match meta {
-                Meta::Path(path) => {
-                    if path.is_ident("defer") {
-                        if item.sig.asyncness.is_none() {
-                            return syn::Error::new_spanned(
-                                arg,
-                                "Synchronous slash commands cannot be deferred",
-                            )
-                            .into_compile_error()
-                            .into();
-                        }
-                        defer = true;
-                    } else {
-                        return syn::Error::new_spanned(meta, "Unexpected argument")
-                            .into_compile_error()
-                            .into();
-                    }
-                }
                 Meta::List(list) => {
                     if list.path.is_ident("description") {
                         for meta in &list.nested {
@@ -213,8 +193,6 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    let defer = LitBool::new(defer, Span::call_site());
-
     // These aren't particularly intuitive variable names because they're for use in `quote!`.
     let mut opt_type = Vec::new();
     let mut opt_name = Vec::new();
@@ -303,21 +281,17 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let convert_res = if item.sig.asyncness.is_some() {
         quote! {
-            let fut = ::std::boxed::Box::pin(async move {
-                <#output as ::twilight_slash_command::_macro_internal::InteractionResult>::into_callback_data(res.await)
+            let fut = Box::pin(async move {
+                <#output as IntoCallbackData>::into_callback_data(res.await)
             });
 
-            ::std::result::Result::Ok(if #defer {
-                ::twilight_slash_command::CommandResponse::Deferred(fut)
-            } else {
-                ::twilight_slash_command::CommandResponse::Async(fut)
-            })
+            Ok((InteractionResponse::DeferredChannelMessageWithSource(EMPTY_CALLBACK), Some(fut)))
         }
     } else {
         quote! {
-            let res = <#output as ::twilight_slash_command::_macro_internal::InteractionResult>::into_callback_data(res);
+            let res = <#output as IntoCallbackData>::into_callback_data(res);
 
-            ::std::result::Result::Ok(::twilight_slash_command::CommandResponse::Sync(res))
+            Ok((InteractionResponse::ChannelMessageWithSource(res), None))
         }
     };
 
@@ -327,9 +301,31 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
         // This needs to be in the same scope as the original function so that all the paths to the argument types stay correct.
         #[doc(hidden)]
         pub fn #gen_fn_name() -> ::twilight_slash_command::CommandDecl {
-            let options = ::std::vec![
+            use ::std::boxed::Box;
+            use ::std::convert::From;
+            use ::std::option::Option::*;
+            use ::std::primitive::str;
+            use ::std::result::Result::*;
+            use ::std::string::String;
+            use ::std::vec;
+
+            use ::twilight_model::application::callback::InteractionResponse;
+            use ::twilight_slash_command::SlashCommandOption;
+            use ::twilight_slash_command::IntoCallbackData;
+
+            /// An empty `CallbackData`, to use for the pointless field of `InteractionResponse::DeferredChannelMessageWithSource`.
+            const EMPTY_CALLBACK: CallbackData = CallbackData {
+                allowed_mentions: None,
+                components: None,
+                content: None,
+                embeds: vec![],
+                flags: None,
+                tts: None,
+            };
+
+            let options = vec![
                 #(
-                    <#opt_type as ::twilight_slash_command::_macro_internal::InteractionOption>::describe(<::std::primitive::str as ::std::string::ToString>::to_string(#opt_name), <::std::primitive::str as ::std::string::ToString>::to_string(#opt_description)),
+                    <#opt_type as SlashCommandOption>::describe(<String as From<&str>>::from(#opt_name), <String as From<&str>>::from(#opt_description)),
                 )*
             ];
 
@@ -337,22 +333,21 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
                 name: #name,
                 description: #description,
                 options,
-                handler: ::std::boxed::Box::new(|options, resolved| {
+                handler: Box::new(|options, resolved| {
                     #(
-                        let mut #opt_ident = ::std::option::Option::None;
+                        let mut #opt_ident = None;
                     )*
 
                     for option in options {
                         #(
                             if option.name() == #opt_name {
-                                #opt_ident = ::std::option::Option::Some(option);
+                                #opt_ident = Some(option);
                             }
                         ) else *
                     }
 
                     #(
-                        let #opt_ident = <#opt_type as ::twilight_slash_command::_macro_internal::InteractionOption>::from_data(#opt_ident, ::std::option::Option::as_ref(&resolved));
-                        let #opt_ident = ::std::option::Option::ok_or_else(#opt_ident, || ::twilight_slash_command::CommandError::InvalidOption(#opt_name))?;
+                        let #opt_ident = <#opt_type as SlashCommandOption>::from_option(#opt_ident, resolved.as_ref()).ok_or(#opt_name)?;
                     )*
 
                     let res = #fn_name(#(#opt_ident),*);

@@ -3,12 +3,22 @@ use std::time::Duration;
 use rand::thread_rng;
 use rand::Rng;
 use serde::Deserialize;
+use twilight_http::Client;
 use twilight_mention::Mention;
+use twilight_model::application::callback::CallbackData;
+use twilight_model::application::component::ActionRow;
+use twilight_model::application::component::button::ButtonStyle;
+use twilight_model::application::component::Button;
+use twilight_model::application::component::Component;
 use twilight_model::application::interaction::application_command::InteractionChannel;
 use twilight_model::guild::Role;
+use twilight_model::id::GuildId;
 use twilight_model::user::User;
 use twilight_slash_command::slash_command;
 use twilight_slash_command::Choices;
+use twilight_slash_command::ComponentResponse;
+use twilight_slash_command::Handler;
+use twilight_slash_command::IntoCallbackData;
 use twilight_slash_command::Mentionable;
 
 #[slash_command(description("Frobs some bits", bits = "The bits to frob"))]
@@ -63,7 +73,7 @@ mentionable: {}",
     )
 }
 
-#[slash_command(defer, description("Prints 'Hello!' after 1 second."))]
+#[slash_command(description("Prints 'Hello!' after 1 second."))]
 pub async fn greet() -> String {
     tokio::time::sleep(Duration::from_secs(1)).await;
     "Hello!".to_string()
@@ -131,4 +141,53 @@ pub fn default(type_option: Type) -> String {
         Type::String => format!("`{:?}`", String::default()),
         Type::Vec => format!("`{:?}`", Vec::<()>::default()),
     }
+}
+
+#[slash_command(description("Create a counter",))]
+pub fn counter() -> CallbackData {
+    CallbackData {
+        content: Some("0".to_string()),
+        components: Some(vec![Component::ActionRow(ActionRow {
+            components: vec![Component::Button(Button {
+                custom_id: Some("inc_count".to_string()),
+                disabled: false,
+                label: Some("+1".to_string()),
+                style: ButtonStyle::Primary,
+
+                emoji: None,
+                url: None,
+            })],
+        })]),
+
+        allowed_mentions: None,
+        embeds: vec![],
+        flags: None,
+        tts: None,
+    }
+}
+
+pub async fn build_handler(guild_id: GuildId, http: Client) -> Handler {
+    Handler::builder(http)
+        .guild_command(guild_id, all_the_args::describe())
+        .guild_command(guild_id, counter::describe())
+        .guild_command(guild_id, default::describe())
+        .guild_command(guild_id, frob::describe())
+        .guild_command(guild_id, greet::describe())
+        .guild_command(guild_id, random::describe())
+        .guild_command(guild_id, rust_version::describe())
+        .component_handler(|message, interaction| {
+            if interaction.custom_id == "inc_count" {
+                let mut count = message.content.parse().unwrap_or(0);
+                count += 1;
+                ComponentResponse::Update(count.to_string().into_callback_data())
+            } else {
+                ComponentResponse::Message(
+                    format!("Unknown message component {}", interaction.custom_id)
+                        .into_callback_data(),
+                )
+            }
+        })
+        .build()
+        .await
+        .unwrap()
 }

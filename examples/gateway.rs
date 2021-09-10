@@ -1,24 +1,21 @@
 use std::env;
 use std::sync::Arc;
 
-use futures::FutureExt;
+use commands::build_handler;
 use futures::StreamExt;
 use twilight_gateway::Cluster;
 use twilight_gateway::Event;
 use twilight_gateway::EventTypeFlags;
 use twilight_gateway::Intents;
 use twilight_http::Client;
-use twilight_model::application::callback::InteractionResponse;
-use twilight_model::application::interaction::Interaction;
-use twilight_slash_command::Handler;
 
 #[path = "common/commands.rs"]
 mod commands;
 
-use commands::{all_the_args, default, frob, greet, random, rust_version};
-
 #[tokio::main]
 async fn main() {
+    env_logger::init();
+
     let token = env::var("TOKEN").expect("Missing discord bot token");
 
     let http = Client::new(token.clone());
@@ -36,16 +33,7 @@ async fn main() {
         .unwrap()
         .into();
 
-    let handler = Handler::builder(http.clone())
-        .guild_command(guild_id, all_the_args::describe())
-        .guild_command(guild_id, default::describe())
-        .guild_command(guild_id, frob::describe())
-        .guild_command(guild_id, greet::describe())
-        .guild_command(guild_id, random::describe())
-        .guild_command(guild_id, rust_version::describe())
-        .build()
-        .await
-        .unwrap();
+    let handler = build_handler(guild_id, http.clone()).await;
 
     let handler = Arc::new(handler);
 
@@ -62,23 +50,14 @@ async fn main() {
 
     while let Some((_, event)) = events.next().await {
         match event {
-            Event::InteractionCreate(event) => match event.0 {
-                Interaction::Ping(ping) => {
-                    // I'm pretty sure Discord never sends pings over the gateway, but we may as well handle it properly.
-                    tokio::spawn(
-                        http.interaction_callback(ping.id, &ping.token, &InteractionResponse::Pong)
-                            .exec()
-                            .map(Result::unwrap),
-                    );
-                }
-                Interaction::ApplicationCommand(command) => {
-                    let handler = Arc::clone(&handler);
-                    tokio::spawn(async move {
-                        handler.handle_gateway(*command).await.unwrap();
-                    });
-                }
-                _ => {}
-            },
+            Event::InteractionCreate(event) => {
+                let handler = Arc::clone(&handler);
+                tokio::spawn(async move {
+                    if let Err(err) = handler.handle_event(*event).await {
+                        log::error!("{}", err);
+                    }
+                });
+            }
             // Ignore any other events
             _ => {}
         }

@@ -20,8 +20,10 @@ webhook = ["ed25519-dalek", "hex", "http", "serde_json"]
 
 [dev-dependencies]
 anyhow = "1.0.43"
+env_logger = "0.9.0"
 futures = "0.3.16"
 hyper = { version = "0.14.12", features = ["server"] }
+log = "0.4.14"
 num_enum = "0.5.4"
 rand = "0.8.4"
 reqwest = "0.11.4"

@@ -1,6 +1,7 @@
 use std::env;
 use std::sync::Arc;
 
+use commands::build_handler;
 use ed25519_dalek::PublicKey;
 use ed25519_dalek::PUBLIC_KEY_LENGTH;
 use hex::FromHex;
@@ -10,12 +11,9 @@ use hyper::Body;
 use hyper::Server;
 use tower::make::Shared;
 use twilight_http::Client;
-use twilight_slash_command::Handler;
 
 #[path = "common/commands.rs"]
 mod commands;
-
-use commands::{all_the_args, default, frob, greet, random, rust_version};
 
 #[tokio::main]
 async fn main() {
@@ -39,16 +37,7 @@ async fn main() {
     let http = Client::new(token.clone());
     http.set_application_id(application_id);
 
-    let handler = Handler::builder(http.clone())
-        .guild_command(guild_id, all_the_args::describe())
-        .guild_command(guild_id, default::describe())
-        .guild_command(guild_id, frob::describe())
-        .guild_command(guild_id, greet::describe())
-        .guild_command(guild_id, random::describe())
-        .guild_command(guild_id, rust_version::describe())
-        .build()
-        .await
-        .unwrap();
+    let handler = build_handler(guild_id, http).await;
 
     let handler = Arc::new(handler);
 
@@ -64,7 +53,7 @@ async fn main() {
             let req = Request::from_parts(parts, bytes.as_ref());
 
             // Get the response.
-            let (res, fut) = handler.handle_request(req, &public_key).await?;
+            let (res, fut) = handler.handle_request(req, &public_key)?;
 
             // Run the deferred future, if any.
             if let Some(fut) = fut {

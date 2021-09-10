@@ -4,82 +4,61 @@ use std::future::Future;
 use std::pin::Pin;
 
 use thiserror::Error;
+use twilight_http::request::application::interaction::update_original_response::UpdateOriginalResponseError;
 use twilight_http::request::application::InteractionError;
-use twilight_http::request::application::UpdateOriginalResponseError;
 use twilight_http::response::DeserializeBodyError;
 use twilight_http::Client;
 use twilight_model::application::callback::CallbackData;
+use twilight_model::application::callback::InteractionResponse;
 use twilight_model::application::command::Command;
 use twilight_model::application::command::CommandOption;
-use twilight_model::application::interaction::application_command::CommandData;
+use twilight_model::application::command::CommandType;
 use twilight_model::application::interaction::application_command::CommandDataOption;
 use twilight_model::application::interaction::application_command::CommandInteractionDataResolved;
-use twilight_model::application::interaction::ApplicationCommand;
-use twilight_model::guild::Role;
+use twilight_model::application::interaction::message_component::MessageComponentInteractionData;
+use twilight_model::application::interaction::Interaction;
+use twilight_model::channel::Message;
 use twilight_model::id::CommandId;
 use twilight_model::id::GuildId;
-use twilight_model::user::User;
+use twilight_model::id::InteractionId;
 
-#[doc(hidden)]
-pub mod _macro_internal;
+mod option_types;
 
 pub use twilight_slash_command_macros::slash_command;
 // Only show the trait in docs, not the derive macro.
+pub use option_types::*;
 #[doc(hidden)]
 pub use twilight_slash_command_macros::Choices;
 
-/// Anything which can be mentioned; either a user or a role.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum Mentionable {
-    User(User),
-    Role(Role),
+/// An empty `CallbackData`, to use for the pointless field of `InteractionResponse::DeferredChannelMessageWithSource`.
+const EMPTY_CALLBACK: CallbackData = CallbackData {
+    allowed_mentions: None,
+    components: None,
+    content: None,
+    embeds: vec![],
+    flags: None,
+    tts: None,
+};
+
+pub enum ComponentResponse {
+    Message(CallbackData),
+    DeferredMessage(DeferredFuture),
+    Update(CallbackData),
+    DeferredUpdate(DeferredFuture),
 }
 
-/// A trait to be implemented for C-like enums of choices for users to enter as arguments to your interaction.
-///
-/// You should usually just implement this by deriving it.
-///
-/// # Examples
-/// ```
-/// use twilight_slash_command::Choices;
-///
-/// #[repr(i64)]
-/// #[derive(Choices)]
-/// enum Foo {
-///     Bar,
-///     Baz,
-///     #[name = "not an ident!"]
-///     Qux,
-/// }
-///
-/// assert_eq!(
-///     Foo::CHOICES,
-///     &[("Bar", 0), ("Baz", 1), ("not an ident!", 2)]
-/// );
-pub trait Choices: Sized {
-    const CHOICES: &'static [(&'static str, i64)];
+/// A future for the result of an asynchronous command.
+pub type DeferredFuture = Pin<Box<dyn Future<Output = CallbackData> + Send>>;
 
-    fn from_discriminant(discriminant: i64) -> Option<Self>;
-}
-
-pub enum CommandResponse {
-    /// This slash command handler is synchronous; here's the response.
-    Sync(CallbackData),
-    /// This slash command handler is asynchronous; await this future to get the response.
-    Async(Pin<Box<dyn Future<Output = CallbackData> + Send>>),
-    /// This slash command is deferred; return a deferred response now, and then update the message when this future completes.
-    Deferred(Pin<Box<dyn Future<Output = CallbackData> + Send>>),
-}
-
-#[derive(Error, Debug)]
-pub enum CommandError {
-    #[error("Unknown command '/{0}'.")]
-    Unknown(String),
-    // We don't need to be too specific about options being wrong, since something had to have gone terribly wrong for this to happen.
-    // We check the IDs of the commands, so we know they're exactly the commands they're supposed to be,
-    // so they could only really have invalid options if something went wrong on Discord's end.
-    #[error("Invalid option '{0}'.")]
-    InvalidOption(&'static str),
+pub struct Response {
+    /// The actual `InteractionResponse` to return to discord.
+    response: InteractionResponse,
+    /// If the response is deferred, a future to await to get the deferred message.
+    future: Option<DeferredFuture>,
+    /// The interaction ID extracted from the interaction.
+    id: InteractionId,
+    /// The interaction token extracted from the interaction.
+    token: String,
 }
 
 #[derive(Error, Debug)]
@@ -98,14 +77,7 @@ pub enum Error {
 }
 
 pub struct CommandDecl {
-    pub handler: Box<
-        dyn Fn(
-                Vec<CommandDataOption>,
-                Option<CommandInteractionDataResolved>,
-            ) -> Result<CommandResponse, CommandError>
-            + Send
-            + Sync,
-    >,
+    pub handler: HandlerFn,
     pub name: &'static str,
     pub description: &'static str,
     pub options: Vec<CommandOption>,
@@ -125,26 +97,34 @@ impl CommandDecl {
             name: self.name.to_string(),
             description: self.description.to_string(),
             options: self.options.clone(),
+
+            // TODO: support the other kinds of commands
+            kind: CommandType::ChatInput,
         }
     }
 }
 
+type HandlerFn = Box<
+    dyn Fn(
+            Vec<CommandDataOption>,
+            Option<CommandInteractionDataResolved>,
+        ) -> Result<(InteractionResponse, Option<DeferredFuture>), &'static str>
+        + Send
+        + Sync,
+>;
+
 /// The information needed to actually handle a command.
 struct CommandHandler {
-    handler: Box<
-        dyn Fn(
-                Vec<CommandDataOption>,
-                Option<CommandInteractionDataResolved>,
-            ) -> Result<CommandResponse, CommandError>
-            + Send
-            + Sync,
-    >,
+    handler: HandlerFn,
     id: CommandId,
 }
 
 pub struct Handler {
     http: Client,
-    handlers: Vec<CommandHandler>,
+    command_handlers: Vec<CommandHandler>,
+    component_handler: Option<
+        Box<dyn Fn(Message, MessageComponentInteractionData) -> ComponentResponse + Send + Sync>,
+    >,
 }
 
 impl Handler {
@@ -152,123 +132,150 @@ impl Handler {
         HandlerBuilder {
             global_commands: Vec::new(),
             guild_commands: HashMap::new(),
+            component_handler: None,
             http,
         }
     }
 
-    pub fn handle(&self, command: CommandData) -> Result<CommandResponse, CommandError> {
-        for handler in &self.handlers {
-            if handler.id == command.id {
-                return (handler.handler)(command.options, command.resolved);
+    pub fn handle(&self, interaction: Interaction) -> Response {
+        match interaction {
+            Interaction::Ping(ping) => Response {
+                response: InteractionResponse::Pong,
+                future: None,
+                id: ping.id,
+                token: ping.token,
+            },
+            Interaction::ApplicationCommand(command) => {
+                for handler in &self.command_handlers {
+                    if handler.id == command.data.id {
+                        let (response, future) =
+                            match (handler.handler)(command.data.options, command.data.resolved) {
+                                Ok(response) => response,
+                                Err(arg) => (
+                                    InteractionResponse::ChannelMessageWithSource(
+                                        format!("Invalid option '{}'", arg).into_callback_data(),
+                                    ),
+                                    None,
+                                ),
+                            };
+                        return Response {
+                            response,
+                            future,
+                            id: command.id,
+                            token: command.token,
+                        };
+                    }
+                }
+
+                // It didn't match any known commands, so give an error response.
+                Response {
+                    response: InteractionResponse::ChannelMessageWithSource(
+                        format!("Unknown command '/{}'", command.data.name).into_callback_data(),
+                    ),
+                    future: None,
+                    id: command.id,
+                    token: command.token,
+                }
             }
+            Interaction::MessageComponent(interaction) => {
+                let (response, future) = if let Some(handler) = &self.component_handler {
+                    let response = handler(interaction.message, interaction.data);
+                    match response {
+                        ComponentResponse::Message(data) => {
+                            (InteractionResponse::ChannelMessageWithSource(data), None)
+                        }
+                        ComponentResponse::DeferredMessage(future) => (
+                            InteractionResponse::DeferredChannelMessageWithSource(EMPTY_CALLBACK),
+                            Some(future),
+                        ),
+                        ComponentResponse::Update(data) => {
+                            (InteractionResponse::UpdateMessage(data), None)
+                        }
+                        ComponentResponse::DeferredUpdate(future) => {
+                            (InteractionResponse::DeferredUpdateMessage, Some(future))
+                        }
+                    }
+                } else {
+                    (
+                        InteractionResponse::ChannelMessageWithSource(
+                            "Error: no message component handler registered"
+                                .to_string()
+                                .into_callback_data(),
+                        ),
+                        None,
+                    )
+                };
+
+                Response {
+                    response,
+                    future,
+                    id: interaction.id,
+                    token: interaction.token,
+                }
+            }
+            _ => todo!(),
+        }
+    }
+
+    #[cfg(any(feature = "gateway", feature = "webhook"))]
+    async fn run_deferred(
+        http: &Client,
+        future: DeferredFuture,
+        token: String,
+    ) -> Result<(), Error> {
+        let callback = future.await;
+
+        let mut builder = http
+            .update_interaction_original(&token)?
+            .content(callback.content.as_deref())?
+            .embeds(Some(&callback.embeds))?;
+
+        if let Some(allowed_mentions) = callback.allowed_mentions {
+            builder = builder.allowed_mentions(allowed_mentions);
         }
 
-        // It didn't match any known commands, so fail.
-        Err(CommandError::Unknown(command.name))
+        builder.exec().await?;
+
+        Ok(())
     }
 
     /// Handle an INTERACTION_CREATE event from the Discord Gateway, automatically sending the response over HTTP.
     ///
     /// Requires the `gateway` feature to be enabled.
     #[cfg(feature = "gateway")]
-    pub async fn handle_gateway(&self, command: ApplicationCommand) -> Result<(), Error> {
-        use twilight_model::application::callback::InteractionResponse;
+    pub async fn handle_event(
+        &self,
+        event: twilight_model::gateway::payload::InteractionCreate,
+    ) -> Result<(), Error> {
+        let response = self.handle(event.0);
 
-        use crate::_macro_internal::InteractionResult;
+        self.http
+            .interaction_callback(response.id, &response.token, &response.response)
+            .exec()
+            .await?;
 
-        match self.handle(command.data) {
-            Ok(response) => match response {
-                CommandResponse::Sync(res) => {
-                    self.http
-                        .interaction_callback(
-                            command.id,
-                            &command.token,
-                            &InteractionResponse::ChannelMessageWithSource(res),
-                        )
-                        .exec()
-                        .await?;
-                }
-                CommandResponse::Async(fut) => {
-                    let res = fut.await;
-
-                    self.http
-                        .interaction_callback(
-                            command.id,
-                            &command.token,
-                            &InteractionResponse::ChannelMessageWithSource(res),
-                        )
-                        .exec()
-                        .await?;
-                }
-                CommandResponse::Deferred(fut) => {
-                    self.http
-                        .interaction_callback(
-                            command.id,
-                            &command.token,
-                            // I'm pretty sure the fact that this takes `CallbackData` in the first place is a mistake; it doesn't do anything.
-                            &InteractionResponse::DeferredChannelMessageWithSource(CallbackData {
-                                allowed_mentions: None,
-                                content: None,
-                                embeds: vec![],
-                                flags: None,
-                                tts: None,
-                                components: None,
-                            }),
-                        )
-                        .exec()
-                        .await?;
-
-                    let res = fut.await;
-
-                    let mut builder = self
-                        .http
-                        .update_interaction_original(&command.token)?
-                        .content(res.content.as_deref())?
-                        .embeds(Some(&res.embeds))?;
-
-                    if let Some(allowed_mentions) = res.allowed_mentions {
-                        builder = builder.allowed_mentions(allowed_mentions);
-                    }
-
-                    builder.exec().await?;
-                }
-            },
-            Err(e) => {
-                // This shouldn't happen, but provide a reasonable response.
-                self.http
-                    .interaction_callback(
-                        command.id,
-                        &command.token,
-                        &InteractionResponse::ChannelMessageWithSource(
-                            format!("Error: {}", e).into_callback_data(),
-                        ),
-                    )
-                    .exec()
-                    .await?;
-            }
+        if let Some(future) = response.future {
+            Self::run_deferred(&self.http, future, response.token).await?;
         }
+
         Ok(())
     }
 
     #[cfg(feature = "webhook")]
-    pub async fn handle_request(
+    pub fn handle_request(
         &self,
         request: http::Request<&[u8]>,
         pub_key: &ed25519_dalek::PublicKey,
     ) -> Result<
         (
             http::Response<Vec<u8>>,
-            Option<Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>>,
+            Option<impl Future<Output = Result<(), Error>> + Send>,
         ),
         Error,
     > {
         use http::header::CONTENT_TYPE;
         use http::Response;
         use http::StatusCode;
-        use twilight_model::application::callback::InteractionResponse;
-        use twilight_model::application::interaction::Interaction;
-
-        use crate::_macro_internal::InteractionResult;
 
         let interaction = match process(request, pub_key) {
             Ok(interaction) => interaction,
@@ -283,99 +290,23 @@ impl Handler {
             }
         };
 
-        match interaction {
-            // Return a Pong if a Ping is received.
-            Interaction::Ping(_) => {
-                let response = InteractionResponse::Pong;
+        let response = self.handle(interaction);
+        let token = response.token;
 
-                let json = serde_json::to_vec(&response)?;
+        let json = serde_json::to_vec(&response.response)?;
 
-                Ok((
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header(CONTENT_TYPE, "application/json")
-                        .body(json.into())
-                        // If this is going to fail, it will always fail.
-                        .unwrap(),
-                    None,
-                ))
-            }
-            // Respond to a slash command.
-            Interaction::ApplicationCommand(command) => {
-                // Run the handler to gain a response.
-                let (response, fut) = match self.handle(command.data) {
-                    Ok(response) => match response {
-                        CommandResponse::Sync(res) => {
-                            (InteractionResponse::ChannelMessageWithSource(res), None)
-                        }
-                        CommandResponse::Async(fut) => (
-                            InteractionResponse::ChannelMessageWithSource(fut.await),
-                            None,
-                        ),
-                        CommandResponse::Deferred(fut) => {
-                            let token = command.token;
-
-                            let http = self.http.clone();
-
-                            let fut = Box::pin(async move {
-                                let res = fut.await;
-
-                                let mut builder = http
-                                    .update_interaction_original(&token)?
-                                    .content(res.content.as_deref())?
-                                    .embeds(Some(&res.embeds))?;
-
-                                if let Some(allowed_mentions) = res.allowed_mentions {
-                                    builder = builder.allowed_mentions(allowed_mentions);
-                                }
-
-                                builder.exec().await?;
-
-                                Ok(())
-                            }) as _;
-
-                            let response = InteractionResponse::DeferredChannelMessageWithSource(
-                                CallbackData {
-                                    allowed_mentions: None,
-                                    content: None,
-                                    embeds: vec![],
-                                    flags: None,
-                                    tts: None,
-                                    components: None,
-                                },
-                            );
-
-                            (response, Some(fut))
-                        }
-                    },
-                    Err(e) => (
-                        InteractionResponse::ChannelMessageWithSource(
-                            format!("Error: {}", e).into_callback_data(),
-                        ),
-                        None,
-                    ),
-                };
-
-                // Serialize the response and return it back to discord.
-                let json = serde_json::to_vec(&response)?;
-
-                let response = Response::builder()
-                    .header(CONTENT_TYPE, "application/json")
-                    .status(StatusCode::OK)
-                    .body(json.into())
-                    .unwrap();
-
-                Ok((response, fut))
-            }
-            // Unhandled interaction types.
-            _ => Ok((
-                Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(vec![])
-                    .unwrap(),
-                None,
-            )),
-        }
+        Ok((
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(json)
+                // If this is going to fail, it will always fail.
+                .unwrap(),
+            response.future.map(|future| {
+                let http = self.http.clone();
+                async move { Self::run_deferred(&http, future, token).await }
+            }),
+        ))
     }
 }
 
@@ -390,7 +321,6 @@ fn process(
     use hex::FromHex;
     use http::Method;
     use http::StatusCode;
-    use twilight_model::application::interaction::Interaction;
 
     // Check that the method used is a POST, all other methods are not allowed.
     if request.method() != Method::POST {
@@ -425,6 +355,9 @@ fn process(
 pub struct HandlerBuilder {
     global_commands: Vec<CommandDecl>,
     guild_commands: HashMap<GuildId, Vec<CommandDecl>>,
+    component_handler: Option<
+        Box<dyn Fn(Message, MessageComponentInteractionData) -> ComponentResponse + Send + Sync>,
+    >,
     http: Client,
 }
 
@@ -440,9 +373,19 @@ impl HandlerBuilder {
         self
     }
 
+    pub fn component_handler<
+        F: Fn(Message, MessageComponentInteractionData) -> ComponentResponse + Send + Sync + 'static,
+    >(
+        mut self,
+        handler: F,
+    ) -> Self {
+        self.component_handler = Some(Box::new(handler));
+        self
+    }
+
     /// Registers the slash commands with Discord and returns the `Handler` to handle them.
     pub async fn build(self) -> Result<Handler, Error> {
-        let mut handlers = Vec::new();
+        let mut command_handlers = Vec::new();
 
         // TODO: do this in parallel with the guild commands.
         let response = self
@@ -460,7 +403,7 @@ impl HandlerBuilder {
             .await?;
 
         for (command, description) in self.global_commands.into_iter().zip(response.into_iter()) {
-            handlers.push(CommandHandler {
+            command_handlers.push(CommandHandler {
                 id: description.id.unwrap(),
                 handler: command.handler,
             })
@@ -482,7 +425,7 @@ impl HandlerBuilder {
                 .await?;
 
             for (command, description) in commands.into_iter().zip(response.into_iter()) {
-                handlers.push(CommandHandler {
+                command_handlers.push(CommandHandler {
                     id: description.id.unwrap(),
                     handler: command.handler,
                 })
@@ -491,7 +434,8 @@ impl HandlerBuilder {
 
         Ok(Handler {
             http: self.http,
-            handlers,
+            command_handlers,
+            component_handler: self.component_handler,
         })
     }
 }
