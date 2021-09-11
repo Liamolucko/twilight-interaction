@@ -108,7 +108,7 @@ type HandlerFn = Box<
     dyn Fn(
             Vec<CommandDataOption>,
             Option<CommandInteractionDataResolved>,
-        ) -> Result<(InteractionResponse, Option<DeferredFuture>), &'static str>
+        ) -> Result<(InteractionResponse, Option<DeferredFuture>), String>
         + Send
         + Sync,
 >;

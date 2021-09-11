@@ -345,12 +345,16 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
                         #(
                             if option.name() == #opt_name {
                                 #opt_ident = Some(option);
-                            }
-                        ) else *
+                            } else
+                        )*
+                        // If there are arguments, this will be an else block, otherwise it'll just be a regular block.
+                        {
+                            return Err(<String as From<&str>>::from(option.name()));
+                        }
                     }
 
                     #(
-                        let #opt_ident = <#opt_type as SlashCommandOption>::from_option(#opt_ident, resolved.as_ref()).ok_or(#opt_name)?;
+                        let #opt_ident = <#opt_type as SlashCommandOption>::from_option(#opt_ident, resolved.as_ref()).ok_or(<String as From<&str>>::from(#opt_name))?;
                     )*
 
                     let res = #fn_name(#(#opt_ident),*);
