@@ -1,4 +1,8 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use twilight_model::application::callback::CallbackData;
+use twilight_model::application::callback::InteractionResponse;
 use twilight_model::application::command::BaseCommandOptionData;
 use twilight_model::application::command::ChoiceCommandOptionData;
 use twilight_model::application::command::CommandOption;
@@ -11,6 +15,9 @@ use twilight_model::id::ChannelId;
 use twilight_model::id::RoleId;
 use twilight_model::id::UserId;
 use twilight_model::user::User;
+
+use crate::DeferredFuture;
+use crate::EMPTY_CALLBACK;
 
 /// Anything which can be mentioned; either a user or a role.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -284,7 +291,9 @@ impl<T: SlashCommandOption> SlashCommandOption for Option<T> {
     fn describe(name: String, description: String) -> CommandOption {
         let mut option = T::describe(name, description);
         match &mut option {
-            CommandOption::SubCommand(data) | CommandOption::SubCommandGroup(data) => data.required = false,
+            CommandOption::SubCommand(data) | CommandOption::SubCommandGroup(data) => {
+                data.required = false
+            }
             CommandOption::String(data) | CommandOption::Integer(data) => data.required = false,
             CommandOption::Boolean(data)
             | CommandOption::User(data)
@@ -329,5 +338,33 @@ impl IntoCallbackData for String {
             tts: None,
             components: None,
         }
+    }
+}
+
+pub trait CommandResponse {
+    fn into_interaction_response(self) -> (InteractionResponse, Option<DeferredFuture>);
+}
+
+impl<T> CommandResponse for T
+where
+    T: IntoCallbackData,
+{
+    fn into_interaction_response(self) -> (InteractionResponse, Option<DeferredFuture>) {
+        (
+            InteractionResponse::ChannelMessageWithSource(self.into_callback_data()),
+            None,
+        )
+    }
+}
+
+impl<T> CommandResponse for Pin<Box<dyn Future<Output = T> + Send>>
+where
+    T: IntoCallbackData + 'static,
+{
+    fn into_interaction_response(self) -> (InteractionResponse, Option<DeferredFuture>) {
+        (
+            InteractionResponse::DeferredChannelMessageWithSource(EMPTY_CALLBACK),
+            Some(Box::pin(async move { self.await.into_callback_data() })),
+        )
     }
 }

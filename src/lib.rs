@@ -13,6 +13,7 @@ use twilight_model::application::callback::InteractionResponse;
 use twilight_model::application::command::Command;
 use twilight_model::application::command::CommandOption;
 use twilight_model::application::command::CommandType;
+use twilight_model::application::interaction::application_command::CommandData;
 use twilight_model::application::interaction::application_command::CommandDataOption;
 use twilight_model::application::interaction::application_command::CommandInteractionDataResolved;
 use twilight_model::application::interaction::message_component::MessageComponentInteractionData;
@@ -29,6 +30,7 @@ pub use twilight_interaction_macros::slash_command;
 pub use option_types::*;
 #[doc(hidden)]
 pub use twilight_interaction_macros::Choices;
+use twilight_model::user::User;
 
 /// An empty `CallbackData`, to use for the pointless field of `InteractionResponse::DeferredChannelMessageWithSource`.
 const EMPTY_CALLBACK: CallbackData = CallbackData {
@@ -76,15 +78,38 @@ pub enum Error {
     Serde(#[from] serde_json::Error),
 }
 
-pub struct CommandDecl {
-    pub handler: HandlerFn,
-    pub name: &'static str,
-    pub description: &'static str,
-    pub options: Vec<CommandOption>,
+pub enum CommandDecl {
+    Slash {
+        description: &'static str,
+        options: Vec<CommandOption>,
+        handler: SlashHandlerFn,
+    },
+    Message {
+        handler: MessageHandlerFn,
+    },
+    User {
+        handler: UserHandlerFn,
+    },
+}
+
+impl<R: CommandResponse + 'static> From<fn(Message) -> R> for CommandDecl {
+    fn from(func: fn(Message) -> R) -> Self {
+        CommandDecl::Message {
+            handler: Box::new(move |message| func(message).into_interaction_response()),
+        }
+    }
+}
+
+impl<R: CommandResponse + 'static> From<fn(User) -> R> for CommandDecl {
+    fn from(func: fn(User) -> R) -> Self {
+        CommandDecl::User {
+            handler: Box::new(move |user| func(user).into_interaction_response()),
+        }
+    }
 }
 
 impl CommandDecl {
-    fn description(&self) -> Command {
+    fn description(&self, name: String) -> Command {
         Command {
             // These are only included on responses
             application_id: None,
@@ -94,17 +119,31 @@ impl CommandDecl {
             // TODO: support setting this
             default_permission: None,
 
-            name: self.name.to_string(),
-            description: self.description.to_string(),
-            options: self.options.clone(),
+            name,
 
-            // TODO: support the other kinds of commands
-            kind: CommandType::ChatInput,
+            description: if let CommandDecl::Slash { description, .. } = self {
+                *description
+            } else {
+                ""
+            }
+            .to_string(),
+
+            options: if let CommandDecl::Slash { options, .. } = self {
+                options.clone()
+            } else {
+                vec![]
+            },
+
+            kind: match self {
+                CommandDecl::Slash { .. } => CommandType::ChatInput,
+                CommandDecl::Message { .. } => CommandType::Message,
+                CommandDecl::User { .. } => CommandType::User,
+            },
         }
     }
 }
 
-type HandlerFn = Box<
+type SlashHandlerFn = Box<
     dyn Fn(
             Vec<CommandDataOption>,
             Option<CommandInteractionDataResolved>,
@@ -113,15 +152,75 @@ type HandlerFn = Box<
         + Sync,
 >;
 
+type MessageHandlerFn =
+    Box<dyn Fn(Message) -> (InteractionResponse, Option<DeferredFuture>) + Send + Sync>;
+
+type UserHandlerFn =
+    Box<dyn Fn(User) -> (InteractionResponse, Option<DeferredFuture>) + Send + Sync>;
+
 /// The information needed to actually handle a command.
-struct CommandHandler {
-    handler: HandlerFn,
-    id: CommandId,
+enum CommandHandler {
+    Slash(SlashHandlerFn),
+    Message(MessageHandlerFn),
+    User(UserHandlerFn),
+}
+
+impl CommandHandler {
+    fn handle(&self, data: CommandData) -> (InteractionResponse, Option<DeferredFuture>) {
+        match self {
+            Self::Slash(handler) => handler(data.options, data.resolved).unwrap_or_else(|err| {
+                (
+                    InteractionResponse::ChannelMessageWithSource(
+                        format!("Invalid option '{}'", err).into_callback_data(),
+                    ),
+                    None,
+                )
+            }),
+            // These two are implemented a bit hackily; twilight doesn't expose `target_id` yet,
+            // so we have to exploit the fact that the user/message being targeted is the only thing in resolved (hopefully!)
+            Self::Message(handler) => data
+                .resolved
+                .filter(|resolved| resolved.messages.len() == 1)
+                .and_then(|mut resolved| resolved.messages.pop())
+                .map(&*handler)
+                .unwrap_or_else(|| {
+                    (
+                        InteractionResponse::ChannelMessageWithSource(
+                            "Invalid message command recieved".to_string().into_callback_data(),
+                        ),
+                        None,
+                    )
+                }),
+            Self::User(handler) => data
+                .resolved
+                .filter(|resolved| resolved.users.len() == 1)
+                .and_then(|mut resolved| resolved.users.pop())
+                .map(&*handler)
+                .unwrap_or_else(|| {
+                    (
+                        InteractionResponse::ChannelMessageWithSource(
+                            "Invalid user command recieved".to_string().into_callback_data(),
+                        ),
+                        None,
+                    )
+                }),
+        }
+    }
+}
+
+impl From<CommandDecl> for CommandHandler {
+    fn from(decl: CommandDecl) -> Self {
+        match decl {
+            CommandDecl::Slash { handler, .. } => Self::Slash(handler),
+            CommandDecl::Message { handler } => Self::Message(handler),
+            CommandDecl::User { handler } => Self::User(handler),
+        }
+    }
 }
 
 pub struct Handler {
     http: Client,
-    command_handlers: Vec<CommandHandler>,
+    command_handlers: Vec<(CommandId, CommandHandler)>,
     component_handler: Option<
         Box<dyn Fn(Message, MessageComponentInteractionData) -> ComponentResponse + Send + Sync>,
     >,
@@ -146,18 +245,10 @@ impl Handler {
                 token: ping.token,
             },
             Interaction::ApplicationCommand(command) => {
-                for handler in &self.command_handlers {
-                    if handler.id == command.data.id {
-                        let (response, future) =
-                            match (handler.handler)(command.data.options, command.data.resolved) {
-                                Ok(response) => response,
-                                Err(arg) => (
-                                    InteractionResponse::ChannelMessageWithSource(
-                                        format!("Invalid option '{}'", arg).into_callback_data(),
-                                    ),
-                                    None,
-                                ),
-                            };
+                for (id, handler) in &self.command_handlers {
+                    if command.data.id == *id {
+                        let (response, future) = handler.handle(command.data);
+
                         return Response {
                             response,
                             future,
@@ -353,8 +444,8 @@ fn process(
 }
 
 pub struct HandlerBuilder {
-    global_commands: Vec<CommandDecl>,
-    guild_commands: HashMap<GuildId, Vec<CommandDecl>>,
+    global_commands: Vec<(&'static str, CommandDecl)>,
+    guild_commands: HashMap<GuildId, Vec<(&'static str, CommandDecl)>>,
     component_handler: Option<
         Box<dyn Fn(Message, MessageComponentInteractionData) -> ComponentResponse + Send + Sync>,
     >,
@@ -362,14 +453,19 @@ pub struct HandlerBuilder {
 }
 
 impl HandlerBuilder {
-    pub fn global_command(mut self, command: CommandDecl) -> Self {
-        self.global_commands.push(command);
+    pub fn global_command<T: Into<CommandDecl>>(mut self, name: &'static str, command: T) -> Self {
+        self.global_commands.push((name, command.into()));
         self
     }
 
-    pub fn guild_command(mut self, guild_id: GuildId, command: CommandDecl) -> Self {
-        let guild_commands = self.guild_commands.entry(guild_id).or_insert(vec![]);
-        guild_commands.push(command);
+    pub fn guild_command<T: Into<CommandDecl>>(
+        mut self,
+        guild_id: GuildId,
+        name: &'static str,
+        command: T,
+    ) -> Self {
+        let guild_commands = self.guild_commands.entry(guild_id).or_insert_with(Vec::new);
+        guild_commands.push((name, command.into()));
         self
     }
 
@@ -394,7 +490,7 @@ impl HandlerBuilder {
                 &self
                     .global_commands
                     .iter()
-                    .map(CommandDecl::description)
+                    .map(|(name, command)| command.description(name.to_string()))
                     .collect::<Vec<_>>(),
             )?
             .exec()
@@ -402,11 +498,13 @@ impl HandlerBuilder {
             .models()
             .await?;
 
-        for (command, description) in self.global_commands.into_iter().zip(response.into_iter()) {
-            command_handlers.push(CommandHandler {
-                id: description.id.unwrap(),
-                handler: command.handler,
-            })
+        for (command, description) in self
+            .global_commands
+            .into_iter()
+            .map(|(_, command)| command)
+            .zip(response.into_iter())
+        {
+            command_handlers.push((description.id.unwrap(), command.into()))
         }
 
         for (guild_id, commands) in self.guild_commands.into_iter() {
@@ -416,7 +514,7 @@ impl HandlerBuilder {
                     guild_id,
                     &commands
                         .iter()
-                        .map(CommandDecl::description)
+                        .map(|(name, command)| command.description(name.to_string()))
                         .collect::<Vec<_>>(),
                 )?
                 .exec()
@@ -424,11 +522,12 @@ impl HandlerBuilder {
                 .models()
                 .await?;
 
-            for (command, description) in commands.into_iter().zip(response.into_iter()) {
-                command_handlers.push(CommandHandler {
-                    id: description.id.unwrap(),
-                    handler: command.handler,
-                })
+            for (command, description) in commands
+                .into_iter()
+                .map(|(_, command)| command)
+                .zip(response.into_iter())
+            {
+                command_handlers.push((description.id.unwrap(), command.into()))
             }
         }
 

@@ -4,22 +4,23 @@ use rand::thread_rng;
 use rand::Rng;
 use serde::Deserialize;
 use twilight_http::Client;
-use twilight_mention::Mention;
-use twilight_model::application::callback::CallbackData;
-use twilight_model::application::component::ActionRow;
-use twilight_model::application::component::button::ButtonStyle;
-use twilight_model::application::component::Button;
-use twilight_model::application::component::Component;
-use twilight_model::application::interaction::application_command::InteractionChannel;
-use twilight_model::guild::Role;
-use twilight_model::id::GuildId;
-use twilight_model::user::User;
 use twilight_interaction::slash_command;
 use twilight_interaction::Choices;
 use twilight_interaction::ComponentResponse;
 use twilight_interaction::Handler;
 use twilight_interaction::IntoCallbackData;
 use twilight_interaction::Mentionable;
+use twilight_mention::Mention;
+use twilight_model::application::callback::CallbackData;
+use twilight_model::application::component::button::ButtonStyle;
+use twilight_model::application::component::ActionRow;
+use twilight_model::application::component::Button;
+use twilight_model::application::component::Component;
+use twilight_model::application::interaction::application_command::InteractionChannel;
+use twilight_model::channel::Message;
+use twilight_model::guild::Role;
+use twilight_model::id::GuildId;
+use twilight_model::user::User;
 
 #[slash_command(description("Frobs some bits", bits = "The bits to frob"))]
 pub fn frob(bits: i64) -> String {
@@ -166,15 +167,20 @@ pub fn counter() -> CallbackData {
     }
 }
 
+fn echo(message: Message) -> String {
+    message.content
+}
+
 pub async fn build_handler(guild_id: GuildId, http: Client) -> Handler {
     Handler::builder(http)
-        .guild_command(guild_id, all_the_args::describe())
-        .guild_command(guild_id, counter::describe())
-        .guild_command(guild_id, default::describe())
-        .guild_command(guild_id, frob::describe())
-        .guild_command(guild_id, greet::describe())
-        .guild_command(guild_id, random::describe())
-        .guild_command(guild_id, rust_version::describe())
+        .guild_command(guild_id, "all-the-args", all_the_args::describe())
+        .guild_command(guild_id, "counter", counter::describe())
+        .guild_command(guild_id, "default", default::describe())
+        .guild_command(guild_id, "frob", frob::describe())
+        .guild_command(guild_id, "greet", greet::describe())
+        .guild_command(guild_id, "random", random::describe())
+        .guild_command(guild_id, "rust-version", rust_version::describe())
+        .guild_command(guild_id, "Echo", echo as fn(Message) -> String)
         .component_handler(|message, interaction| {
             if interaction.custom_id == "inc_count" {
                 let mut count = message.content.parse().unwrap_or(0);

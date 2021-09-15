@@ -277,7 +277,6 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let fn_name = &item.sig.ident;
-    let name = LitStr::new(&fn_name.to_string().replace('_', "-"), fn_name.span());
 
     let gen_fn_name = Ident::new(&format!("__{}_describe", fn_name), fn_name.span());
 
@@ -332,8 +331,7 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
                 )*
             ];
 
-            ::twilight_interaction::CommandDecl {
-                name: #name,
+            ::twilight_interaction::CommandDecl::Slash {
                 description: #description,
                 options,
                 handler: Box::new(|options, resolved| {
