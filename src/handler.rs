@@ -12,6 +12,7 @@ use twilight_model::id::GuildId;
 
 use crate::CommandDecl;
 use crate::ComponentResponse;
+use crate::Context;
 use crate::DeferredFuture;
 use crate::Error;
 use crate::IntoCallbackData;
@@ -29,23 +30,29 @@ enum CommandHandler {
 }
 
 impl CommandHandler {
-    fn handle(&self, data: CommandData) -> (InteractionResponse, Option<DeferredFuture>) {
+    fn handle(
+        &self,
+        context: Context,
+        data: CommandData,
+    ) -> (InteractionResponse, Option<DeferredFuture>) {
         match self {
-            Self::Slash(handler) => handler(data.options, data.resolved).unwrap_or_else(|err| {
-                (
-                    InteractionResponse::ChannelMessageWithSource(
-                        format!("Invalid option '{}'", err).into_callback_data(),
-                    ),
-                    None,
-                )
-            }),
+            Self::Slash(handler) => {
+                handler(context, data.options, data.resolved).unwrap_or_else(|err| {
+                    (
+                        InteractionResponse::ChannelMessageWithSource(
+                            format!("Invalid option '{}'", err).into_callback_data(),
+                        ),
+                        None,
+                    )
+                })
+            }
             // These two are implemented a bit hackily; twilight doesn't expose `target_id` yet,
             // so we have to exploit the fact that the user/message being targeted is the only thing in resolved (hopefully!)
             Self::Message(handler) => data
                 .resolved
                 .filter(|resolved| resolved.messages.len() == 1)
                 .and_then(|mut resolved| resolved.messages.pop())
-                .map(&*handler)
+                .map(|message| handler(context, message))
                 .unwrap_or_else(|| {
                     (
                         InteractionResponse::ChannelMessageWithSource(
@@ -60,7 +67,7 @@ impl CommandHandler {
                 .resolved
                 .filter(|resolved| resolved.users.len() == 1)
                 .and_then(|mut resolved| resolved.users.pop())
-                .map(&*handler)
+                .map(|user| handler(context, user))
                 .unwrap_or_else(|| {
                     (
                         InteractionResponse::ChannelMessageWithSource(
@@ -89,7 +96,11 @@ pub struct Handler {
     http: Client,
     command_handlers: Vec<(CommandId, CommandHandler)>,
     component_handler: Option<
-        Box<dyn Fn(Message, MessageComponentInteractionData) -> ComponentResponse + Send + Sync>,
+        Box<
+            dyn Fn(Context, Message, MessageComponentInteractionData) -> ComponentResponse
+                + Send
+                + Sync,
+        >,
     >,
 }
 
@@ -100,6 +111,12 @@ impl Handler {
             guild_commands: HashMap::new(),
             component_handler: None,
             http,
+        }
+    }
+
+    fn context(&self) -> Context {
+        Context {
+            http: self.http.clone(),
         }
     }
 
@@ -114,7 +131,7 @@ impl Handler {
             Interaction::ApplicationCommand(command) => {
                 for (id, handler) in &self.command_handlers {
                     if command.data.id == *id {
-                        let (response, future) = handler.handle(command.data);
+                        let (response, future) = handler.handle(self.context(), command.data);
 
                         return Response {
                             response,
@@ -137,7 +154,7 @@ impl Handler {
             }
             Interaction::MessageComponent(interaction) => {
                 let (response, future) = if let Some(handler) = &self.component_handler {
-                    let response = handler(interaction.message, interaction.data);
+                    let response = handler(self.context(), interaction.message, interaction.data);
                     match response {
                         ComponentResponse::Message(data) => {
                             (InteractionResponse::ChannelMessageWithSource(data), None)
@@ -314,7 +331,11 @@ pub struct HandlerBuilder {
     global_commands: Vec<(&'static str, CommandDecl)>,
     guild_commands: HashMap<GuildId, Vec<(&'static str, CommandDecl)>>,
     component_handler: Option<
-        Box<dyn Fn(Message, MessageComponentInteractionData) -> ComponentResponse + Send + Sync>,
+        Box<
+            dyn Fn(Context, Message, MessageComponentInteractionData) -> ComponentResponse
+                + Send
+                + Sync,
+        >,
     >,
     http: Client,
 }
@@ -337,7 +358,10 @@ impl HandlerBuilder {
     }
 
     pub fn component_handler<
-        F: Fn(Message, MessageComponentInteractionData) -> ComponentResponse + Send + Sync + 'static,
+        F: Fn(Context, Message, MessageComponentInteractionData) -> ComponentResponse
+            + Send
+            + Sync
+            + 'static,
     >(
         mut self,
         handler: F,

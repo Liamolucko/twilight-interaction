@@ -22,9 +22,11 @@ pub use twilight_interaction_macros::slash_command;
 #[doc(hidden)]
 pub use twilight_interaction_macros::Choices;
 
+mod context;
 mod handler;
 mod option_types;
 
+pub use context::*;
 pub use handler::*;
 pub use option_types::*;
 
@@ -76,6 +78,7 @@ pub enum Error {
 
 pub(crate) type SlashHandlerFn = Box<
     dyn Fn(
+            Context,
             Vec<CommandDataOption>,
             Option<CommandInteractionDataResolved>,
         ) -> Result<(InteractionResponse, Option<DeferredFuture>), String>
@@ -84,10 +87,10 @@ pub(crate) type SlashHandlerFn = Box<
 >;
 
 pub(crate) type MessageHandlerFn =
-    Box<dyn Fn(Message) -> (InteractionResponse, Option<DeferredFuture>) + Send + Sync>;
+    Box<dyn Fn(Context, Message) -> (InteractionResponse, Option<DeferredFuture>) + Send + Sync>;
 
 pub(crate) type UserHandlerFn =
-    Box<dyn Fn(User) -> (InteractionResponse, Option<DeferredFuture>) + Send + Sync>;
+    Box<dyn Fn(Context, User) -> (InteractionResponse, Option<DeferredFuture>) + Send + Sync>;
 
 pub enum CommandDecl {
     Slash {
@@ -103,18 +106,20 @@ pub enum CommandDecl {
     },
 }
 
-impl<R: CommandResponse + 'static> From<fn(Message) -> R> for CommandDecl {
-    fn from(func: fn(Message) -> R) -> Self {
+impl<R: CommandResponse + 'static> From<fn(Context, Message) -> R> for CommandDecl {
+    fn from(func: fn(Context, Message) -> R) -> Self {
         CommandDecl::Message {
-            handler: Box::new(move |message| func(message).into_interaction_response()),
+            handler: Box::new(move |context, message| {
+                func(context, message).into_interaction_response()
+            }),
         }
     }
 }
 
-impl<R: CommandResponse + 'static> From<fn(User) -> R> for CommandDecl {
-    fn from(func: fn(User) -> R) -> Self {
+impl<R: CommandResponse + 'static> From<fn(Context, User) -> R> for CommandDecl {
+    fn from(func: fn(Context, User) -> R) -> Self {
         CommandDecl::User {
-            handler: Box::new(move |user| func(user).into_interaction_response()),
+            handler: Box::new(move |context, user| func(context, user).into_interaction_response()),
         }
     }
 }

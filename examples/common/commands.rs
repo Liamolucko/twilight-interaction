@@ -1,12 +1,16 @@
+use std::pin::Pin;
 use std::time::Duration;
 
 use rand::thread_rng;
 use rand::Rng;
 use serde::Deserialize;
+use std::future::Future;
+use twilight_http::request::prelude::RequestReactionType;
 use twilight_http::Client;
 use twilight_interaction::slash_command;
 use twilight_interaction::Choices;
 use twilight_interaction::ComponentResponse;
+use twilight_interaction::Context;
 use twilight_interaction::Handler;
 use twilight_interaction::IntoCallbackData;
 use twilight_interaction::Mentionable;
@@ -23,12 +27,12 @@ use twilight_model::id::GuildId;
 use twilight_model::user::User;
 
 #[slash_command(description("Frobs some bits", bits = "The bits to frob"))]
-pub fn frob(bits: i64) -> String {
+pub fn frob(_: Context, bits: i64) -> String {
     bits.reverse_bits().to_string()
 }
 
 #[slash_command(description("Generate a random number from 1 to 10"))]
-pub fn random() -> String {
+pub fn random(_: Context) -> String {
     thread_rng().gen_range(1..=10).to_string()
 }
 
@@ -43,6 +47,7 @@ pub fn random() -> String {
     mentionable = "Something mentionable"
 ))]
 pub fn all_the_args(
+    _: Context,
     string: String,
     int: i64,
     bool: bool,
@@ -75,13 +80,13 @@ mentionable: {}",
 }
 
 #[slash_command(description("Prints 'Hello!' after 1 second."))]
-pub async fn greet() -> String {
+pub async fn greet(_: Context) -> String {
     tokio::time::sleep(Duration::from_secs(1)).await;
     "Hello!".to_string()
 }
 
 #[slash_command(description("Gets the current Rust version"))]
-pub async fn rust_version() -> String {
+pub async fn rust_version(_: Context) -> String {
     // The subset of the manifest we care about.
     #[derive(Deserialize)]
     struct Manifest {
@@ -132,7 +137,7 @@ pub enum Type {
     ),
     rename(type_option = "type")
 )]
-pub fn default(type_option: Type) -> String {
+pub fn default(_: Context, type_option: Type) -> String {
     match type_option {
         Type::Bool => format!("`{:?}`", bool::default()),
         Type::Char => format!("`{:?}`", char::default()),
@@ -144,8 +149,8 @@ pub fn default(type_option: Type) -> String {
     }
 }
 
-#[slash_command(description("Create a counter",))]
-pub fn counter() -> CallbackData {
+#[slash_command(description("Create a counter"))]
+pub fn counter(_: Context) -> CallbackData {
     CallbackData {
         content: Some("0".to_string()),
         components: Some(vec![Component::ActionRow(ActionRow {
@@ -167,8 +172,34 @@ pub fn counter() -> CallbackData {
     }
 }
 
-fn echo(message: Message) -> String {
+fn echo(_: Context, message: Message) -> String {
     message.content
+}
+
+async fn add_smiley(ctx: Context, message: Message) -> CallbackData {
+    let response = match ctx
+        .http
+        .create_reaction(
+            message.channel_id,
+            message.id,
+            &RequestReactionType::Unicode { name: "😃" },
+        )
+        .exec()
+        .await
+    {
+        Ok(_) => "Smiley added".to_string(),
+        Err(e) => format!("Network error: {}", e),
+    };
+
+    CallbackData {
+        content: Some(response),
+        flags: None,
+
+        allowed_mentions: None,
+        components: None,
+        embeds: vec![],
+        tts: None,
+    }
 }
 
 pub async fn build_handler(guild_id: GuildId, http: Client) -> Handler {
@@ -180,8 +211,18 @@ pub async fn build_handler(guild_id: GuildId, http: Client) -> Handler {
         .guild_command(guild_id, "greet", greet::describe())
         .guild_command(guild_id, "random", random::describe())
         .guild_command(guild_id, "rust-version", rust_version::describe())
-        .guild_command(guild_id, "Echo", echo as fn(Message) -> String)
-        .component_handler(|message, interaction| {
+        // TODO: is it possible to get away without the `as fn(_, _) -> _`?
+        .guild_command(guild_id, "Echo", echo as fn(_, _) -> _)
+        .guild_command(
+            guild_id,
+            "Add Smiley",
+            // This boilerplate is dumb; you shouldn't have to box the future in the first place,
+            // but I can't just implement `CommandResponse` for all futures because rustc is conservative
+            // and assumes that `CallbackData` could implement it in the future.
+            (|context, message| Box::pin(add_smiley(context, message)))
+                as fn(_, _) -> Pin<Box<dyn Future<Output = CallbackData> + Send>>,
+        )
+        .component_handler(|_, message, interaction| {
             if interaction.custom_id == "inc_count" {
                 let mut count = message.content.parse().unwrap_or(0);
                 count += 1;

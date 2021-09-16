@@ -202,7 +202,8 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
     // `opt_name`, but modified so that it definitely won't conflict with any of our internal variable names.
     let mut opt_ident = Vec::new();
 
-    for arg in &item.sig.inputs {
+    // Skip the context argument at the start.
+    for arg in item.sig.inputs.iter().skip(1) {
         match arg {
             FnArg::Receiver(_) => {
                 return syn::Error::new_spanned(
@@ -334,7 +335,7 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
             ::twilight_interaction::CommandDecl::Slash {
                 description: #description,
                 options,
-                handler: Box::new(|options, resolved| {
+                handler: Box::new(|context, options, resolved| {
                     #(
                         let mut #opt_ident = None;
                     )*
@@ -355,7 +356,7 @@ pub fn slash_command(args: TokenStream, item: TokenStream) -> TokenStream {
                         let #opt_ident = <#opt_type as SlashCommandOption>::from_option(#opt_ident, resolved.as_ref()).ok_or(<String as From<&str>>::from(#opt_name))?;
                     )*
 
-                    let res = #fn_name(#(#opt_ident),*);
+                    let res = #fn_name(context, #(#opt_ident),*);
 
                     #convert_res
                 })
