@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::future::Future;
 
 use twilight_http::Client;
+use twilight_model::application::callback::CallbackData;
 use twilight_model::application::callback::InteractionResponse;
 use twilight_model::application::interaction::application_command::CommandData;
 use twilight_model::application::interaction::message_component::MessageComponentInteractionData;
 use twilight_model::application::interaction::Interaction;
+use twilight_model::channel::message::MessageFlags;
 use twilight_model::channel::Message;
 use twilight_model::id::CommandId;
 use twilight_model::id::GuildId;
@@ -15,7 +17,6 @@ use crate::ComponentResponse;
 use crate::Context;
 use crate::DeferredFuture;
 use crate::Error;
-use crate::IntoCallbackData;
 use crate::MessageHandlerFn;
 use crate::Response;
 use crate::SlashHandlerFn;
@@ -39,9 +40,11 @@ impl CommandHandler {
             Self::Slash(handler) => {
                 handler(context, data.options, data.resolved).unwrap_or_else(|err| {
                     (
-                        InteractionResponse::ChannelMessageWithSource(
-                            format!("Invalid option '{}'", err).into_callback_data(),
-                        ),
+                        InteractionResponse::ChannelMessageWithSource(CallbackData {
+                            content: Some(format!("Invalid option '{}'", err)),
+                            flags: Some(MessageFlags::EPHEMERAL),
+                            ..EMPTY_CALLBACK
+                        }),
                         None,
                     )
                 })
@@ -55,11 +58,11 @@ impl CommandHandler {
                 .map(|message| handler(context, message))
                 .unwrap_or_else(|| {
                     (
-                        InteractionResponse::ChannelMessageWithSource(
-                            "Invalid message command recieved"
-                                .to_string()
-                                .into_callback_data(),
-                        ),
+                        InteractionResponse::ChannelMessageWithSource(CallbackData {
+                            content: Some("Invalid message command recieved".to_string()),
+                            flags: Some(MessageFlags::EPHEMERAL),
+                            ..EMPTY_CALLBACK
+                        }),
                         None,
                     )
                 }),
@@ -70,11 +73,11 @@ impl CommandHandler {
                 .map(|user| handler(context, user))
                 .unwrap_or_else(|| {
                     (
-                        InteractionResponse::ChannelMessageWithSource(
-                            "Invalid user command recieved"
-                                .to_string()
-                                .into_callback_data(),
-                        ),
+                        InteractionResponse::ChannelMessageWithSource(CallbackData {
+                            content: Some("Invalid user command recieved".to_string()),
+                            flags: Some(MessageFlags::EPHEMERAL),
+                            ..EMPTY_CALLBACK
+                        }),
                         None,
                     )
                 }),
@@ -144,9 +147,11 @@ impl Handler {
 
                 // It didn't match any known commands, so give an error response.
                 Response {
-                    response: InteractionResponse::ChannelMessageWithSource(
-                        format!("Unknown command '/{}'", command.data.name).into_callback_data(),
-                    ),
+                    response: InteractionResponse::ChannelMessageWithSource(CallbackData {
+                        content: Some(format!("Unknown command '/{}'", command.data.name)),
+                        flags: Some(MessageFlags::EPHEMERAL),
+                        ..EMPTY_CALLBACK
+                    }),
                     future: None,
                     id: command.id,
                     token: command.token,
@@ -172,11 +177,13 @@ impl Handler {
                     }
                 } else {
                     (
-                        InteractionResponse::ChannelMessageWithSource(
-                            "Error: no message component handler registered"
-                                .to_string()
-                                .into_callback_data(),
-                        ),
+                        InteractionResponse::ChannelMessageWithSource(CallbackData {
+                            content: Some(
+                                "Error: no message component handler registered".to_string(),
+                            ),
+                            flags: Some(MessageFlags::EPHEMERAL),
+                            ..EMPTY_CALLBACK
+                        }),
                         None,
                     )
                 };
