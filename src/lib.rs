@@ -13,6 +13,7 @@ use twilight_model::application::command::CommandOption;
 use twilight_model::application::command::CommandType;
 use twilight_model::application::interaction::application_command::CommandDataOption;
 use twilight_model::application::interaction::application_command::CommandInteractionDataResolved;
+use twilight_model::channel::message::MessageFlags;
 use twilight_model::channel::Message;
 use twilight_model::id::InteractionId;
 use twilight_model::user::User;
@@ -30,7 +31,6 @@ pub use context::*;
 pub use handler::*;
 pub use option_types::*;
 
-/// An empty `CallbackData`, to use for the pointless field of `InteractionResponse::DeferredChannelMessageWithSource`.
 const EMPTY_CALLBACK: CallbackData = CallbackData {
     allowed_mentions: None,
     components: None,
@@ -51,7 +51,7 @@ pub enum ComponentResponse {
 pub type DeferredFuture = Pin<Box<dyn Future<Output = CallbackData> + Send>>;
 
 pub struct Response {
-    /// The actual `InteractionResponse` to return to discord.
+    /// The actual `InteractionResponse` to return to Discord.
     response: InteractionResponse,
     /// If the response is deferred, a future to await to get the deferred message.
     future: Option<DeferredFuture>,
@@ -106,20 +106,56 @@ pub enum CommandDecl {
     },
 }
 
-impl<R: CommandResponse + 'static> From<fn(Context, Message) -> R> for CommandDecl {
+impl<R: Into<InteractionResponse> + 'static> From<fn(Context, Message) -> R> for CommandDecl {
     fn from(func: fn(Context, Message) -> R) -> Self {
         CommandDecl::Message {
             handler: Box::new(move |context, message| {
-                func(context, message).into_interaction_response()
+                let response = func(context, message).into();
+                match response {
+                    InteractionResponse::Immediate(response) => (
+                        InteractionResponse::ChannelMessageWithSource(response),
+                        None,
+                    ),
+                    InteractionResponse::Deferred { ephemeral, future } => (
+                        InteractionResponse::DeferredChannelMessageWithSource(CallbackData {
+                            flags: Some(if ephemeral {
+                                MessageFlags::EPHEMERAL
+                            } else {
+                                MessageFlags::empty()
+                            }),
+                            ..EMPTY_CALLBACK
+                        }),
+                        Some(future),
+                    ),
+                }
             }),
         }
     }
 }
 
-impl<R: CommandResponse + 'static> From<fn(Context, User) -> R> for CommandDecl {
+impl<R: Into<Response> + 'static> From<fn(Context, User) -> R> for CommandDecl {
     fn from(func: fn(Context, User) -> R) -> Self {
         CommandDecl::User {
-            handler: Box::new(move |context, user| func(context, user).into_interaction_response()),
+            handler: Box::new(move |context, user| {
+                let response = func(context, user).into();
+                match response {
+                    Response::Immediate(response) => (
+                        InteractionResponse::ChannelMessageWithSource(response),
+                        None,
+                    ),
+                    Response::Deferred { ephemeral, future } => (
+                        InteractionResponse::DeferredChannelMessageWithSource(CallbackData {
+                            flags: Some(if ephemeral {
+                                MessageFlags::EPHEMERAL
+                            } else {
+                                MessageFlags::empty()
+                            }),
+                            ..EMPTY_CALLBACK
+                        }),
+                        Some(future),
+                    ),
+                }
+            }),
         }
     }
 }

@@ -2,7 +2,6 @@ use std::future::Future;
 use std::pin::Pin;
 
 use twilight_model::application::callback::CallbackData;
-use twilight_model::application::callback::InteractionResponse;
 use twilight_model::application::command::BaseCommandOptionData;
 use twilight_model::application::command::ChoiceCommandOptionData;
 use twilight_model::application::command::CommandOption;
@@ -341,30 +340,46 @@ impl IntoCallbackData for String {
     }
 }
 
-pub trait CommandResponse {
-    fn into_interaction_response(self) -> (InteractionResponse, Option<DeferredFuture>);
+/// A response to an interaction, which can be either immediate or deferred.
+pub enum InteractionResponse {
+    /// An immediate response, containing a [`CallbackData`] which represents the response's contents.
+    Immediate(CallbackData),
+    /// A deferred response.
+    ///
+    /// This will initially show either nothing or a loading state, depending on the kind of interaction,
+    /// which will later be replaced with an actual response.
+    ///
+    /// This implementation is based on a [`Future`], and will set the response to the value it resolved to.
+    Deferred {
+        /// Whether or not this response should be ephemeral.
+        /// An ephemeral response can only be seen by the user who initiated the interaction.
+        ///
+        /// This is required before the response itself to determine whether the loading message should be ephemeral.
+        ephemeral: bool,
+        /// The future which will determine the response, with which the message will be updated.
+        future: DeferredFuture,
+    },
 }
 
-impl<T> CommandResponse for T
+impl<T> From<T> for InteractionResponse
 where
     T: IntoCallbackData,
 {
-    fn into_interaction_response(self) -> (InteractionResponse, Option<DeferredFuture>) {
-        (
-            InteractionResponse::ChannelMessageWithSource(self.into_callback_data()),
-            None,
-        )
+    fn from(val: T) -> Self {
+        Self::Immediate(val.into_callback_data())
     }
 }
 
-impl<T> CommandResponse for Pin<Box<dyn Future<Output = T> + Send>>
+// Ideally this would be implemented for all futures, but then there's a conflict if a type implements both `IntoCallbackData` and `Future`.
+// TODO: if/when specialization is stabilised, add an impl for types which implement both, and prioritise the `Future` implementation.
+impl<T> From<Pin<Box<dyn Future<Output = T> + Send>>> for InteractionResponse
 where
     T: IntoCallbackData + 'static,
 {
-    fn into_interaction_response(self) -> (InteractionResponse, Option<DeferredFuture>) {
-        (
-            InteractionResponse::DeferredChannelMessageWithSource(EMPTY_CALLBACK),
-            Some(Box::pin(async move { self.await.into_callback_data() })),
-        )
+    fn from(fut: Pin<Box<dyn Future<Output = T> + Send>>) -> Self {
+        Self::Deferred {
+            ephemeral: false,
+            future: Box::pin(async move { fut.await.into_callback_data() }),
+        }
     }
 }
